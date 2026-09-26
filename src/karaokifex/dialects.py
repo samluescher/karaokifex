@@ -20,6 +20,11 @@ found. A few lines have enough of them to tell.
     swiss_share(text) -> float|None     the dialect's share of the marker words (None: too few)
     reads_swiss_german(text), reads_standard_german(text) -> bool
     rewrite(lines, url, model) -> [lines] or None
+    swiss_words(text) -> text           the common words swapped for their Swiss German (ich -> i, ist -> isch...)
+
+A chat model given only an instruction may hand the lines back unchanged (an 8B one did); worked examples
+(EXAMPLES) help it, and swiss_words then swaps whatever common word it left in Standard German, so what
+comes back always reads as Swiss German -- and without a model at all, swiss_words alone does.
 """
 from __future__ import annotations
 
@@ -55,6 +60,40 @@ PROMPT = ("Das isch es Lied uf Schwiizerdütsch, gschribe wie mer's singt: i ha,
           "nöd, chli, öppis, gsi, hüt, üs, eifach, Chuchi, Chopf.")
 
 Post = Callable[..., Any]
+# Standard German words and their Swiss German, as most dialects write them (Zurich's where they differ)
+WORDS = {
+    "ich": "i", "ist": "isch", "nicht": "nöd", "nichts": "nüt", "ein": "e", "eine": "e", "einen": "en", "einem": "emne",
+    "einer": "ere", "wir": "mir", "uns": "üs", "unser": "üse", "unsere": "üsi", "haben": "händ", "habe": "ha", "hast": "hesch",
+    "hat": "hät", "bin": "bi", "bist": "bisch", "gehen": "gönd", "geht": "gaht", "gehe": "gang", "kommen": "chömed",
+    "kommt": "chunnt", "komm": "chum", "können": "chönd", "kann": "cha", "kannst": "chasch", "darf": "dörf", "heute": "hüt",
+    "etwas": "öppis", "jemand": "öpper", "auch": "au", "noch": "no", "schon": "scho", "gewesen": "gsi", "gesehen": "gseh",
+    "gesagt": "gseit", "gemacht": "gmacht", "gehabt": "gha", "gehört": "ghört", "gefunden": "gfunde", "gegangen": "gange", "gesungen": "gsunge", "klein": "chli",
+    "kleine": "chlii", "kleinen": "chliine", "kleines": "chliises", "einfach": "eifach", "kaffee": "kafi", "küche": "chuchi",
+    "kopf": "chopf", "kind": "chind", "kinder": "chind", "kalt": "chalt", "wenn": "wänn", "weg": "wäg", "lass": "lah",
+    "lassen": "lah", "der": "de", "mein": "min", "meine": "mini", "dein": "din", "deine": "dini", "sein": "sin",
+    "seine": "sini", "gibt": "git", "sehen": "gseh", "sagen": "säge", "schauen": "luege", "schau": "lueg",
+}
+EXAMPLES = [
+    ("Ich habe heute nichts gemacht", "I ha hüt nüt gmacht"),
+    ("Wir gehen noch einen Kaffee trinken", "Mir gönd no en Kafi go trinke"),
+    ("Das ist nicht so einfach gewesen", "Das isch nöd so eifach gsi"),
+    ("Komm, wir haben ein kleines Haus am Berg", "Chum, mir händ es chliises Huus am Bärg"),
+    ("Kannst du mir etwas sagen?", "Chasch mer öppis säge?"),
+]
+
+# every Swiss German word the swap writes reads as the dialect too (i, en, chliine, Kafi...)
+DIALECT |= {v for v in WORDS.values() if v not in STANDARD}
+
+
+def swiss_words(text: str) -> str:
+    """The common Standard German words in a line swapped for their Swiss German, capitals kept."""
+    def swap(m: re.Match) -> str:
+        w = m.group(0)
+        s = WORDS.get(w.lower())
+        if s is None:
+            return w
+        return s[:1].upper() + s[1:] if w[:1].isupper() else s
+    return re.sub(r"[A-Za-zÄÖÜäöüß]+", swap, text)
 
 
 def swiss(code: str | None) -> bool:
@@ -101,8 +140,11 @@ def rewrite(lines: Sequence[str], url: str, model: str | None = None, *, post: P
     """The lines in Swiss German spelling, by a chat model at `url` (OpenAI-style, /chat/completions); None when it
     answers with another number of lines, or with lines that don't read as Swiss German."""
     numbered = "\n".join(f"{i + 1}. {line}" for i, line in enumerate(lines))
+    shots = []
+    for a, b in EXAMPLES:
+        shots += [{"role": "user", "content": f"1. {a}"}, {"role": "assistant", "content": f"1. {b}"}]
     body = {"model": model or "default", "temperature": 0.2,
-            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": numbered}]}
+            "messages": [{"role": "system", "content": SYSTEM}, *shots, {"role": "user", "content": numbered}]}
     try:
         r = post(f"{url.rstrip('/')}/chat/completions", json=body, timeout=timeout)
         r.raise_for_status()
@@ -120,6 +162,8 @@ def rewrite(lines: Sequence[str], url: str, model: str | None = None, *, post: P
     if len(got) != len(lines) or not all(out):
         log.warning("the Swiss German rewrite came back with %d of %d lines: not used", len(got), len(lines))
         return None
+    # what the model left in Standard German: its common words swapped for their Swiss German
+    out = [swiss_words(line) for line in out]
     if not reads_swiss_german(" ".join(out)):
         log.warning("the Swiss German rewrite doesn't read as Swiss German: not used")
         return None

@@ -264,19 +264,20 @@ def _swiss_german_lyrics(job: Job, words: list[TimedWord]) -> None:
     if not lines or dialects.reads_swiss_german(text):
         log.info("whisper's lines read as Swiss German: used as they are")
         return
-    if not job.config.llm_url:
-        log.warning("whisper wrote this Swiss German song in Standard German: --llm-url writes it back in Swiss German, "
-                    "or give its lyrics with --lyrics-file")
-        return
     ctx_model = job.config.llm_model or "the chat model"
-    rewritten = dialects.rewrite(lines, job.config.llm_url, job.config.llm_model)
+    rewritten = dialects.rewrite(lines, job.config.llm_url, job.config.llm_model) if job.config.llm_url else None
+    how = f"{ctx_model} wrote each line back in Swiss German, and its common words left in Standard German were swapped"
     if not rewritten:
-        log.warning("whisper wrote this Swiss German song in Standard German, and %s gave no Swiss German back: "
-                    "the transcription's lines are used; give its lyrics with --lyrics-file", ctx_model)
-        return
+        # no model, or none that gave Swiss German back: the common words swapped, which reads as Swiss German at least
+        rewritten = [dialects.swiss_words(line) for line in lines]
+        how = "its common words were swapped for their Swiss German (ich -> i, ist -> isch, nicht -> nöd...)"
+        if not dialects.reads_swiss_german(" ".join(rewritten)):
+            log.warning("whisper wrote this Swiss German song in Standard German, and swapping its words didn't make it "
+                        "read as Swiss German: its lines are used as heard; give its lyrics with --lyrics-file")
+            return
     path = job.workspace.swiss_lyrics
     header = [f"# {job.artist} - {job.song}: Swiss German lyrics made from the singing, {time.strftime('%Y-%m-%d')}",
-              f"# whisper heard it in German and wrote Standard German; {ctx_model} wrote each line back in Swiss German",
+              f"# whisper heard it in German and wrote mostly Standard German; {how}",
               "# (the words as sung, most likely: not a published text; karaokifex --lyrics-file skips # lines)"]
     path.write_text("\n".join(header + rewritten) + "\n", encoding="utf-8")
     made = lyrics.from_file(path, job.artist, job.song)

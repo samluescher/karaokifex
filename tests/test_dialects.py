@@ -32,5 +32,16 @@ def test_a_rewrite_comes_back_line_for_line_in_swiss_german_or_not_at_all():
     assert dialects.rewrite(lines, "http://x/v1", "m", post=good) == ["I ha hüt nüt gmacht", "es isch nöd so eifach"]
     short = lambda *a, **k: _Answer("1. I ha hüt nüt gmacht")
     assert dialects.rewrite(lines, "http://x/v1", post=short) is None
-    still_german = lambda *a, **k: _Answer("1. Ich habe heute nichts gemacht\n2. es ist nicht so einfach")
-    assert dialects.rewrite(lines, "http://x/v1", post=still_german) is None
+
+
+def test_the_common_words_swapped_read_as_swiss_german():
+    line = "Ich habe heute nicht einen kleinen Kaffee gehabt, wir sind noch hier"
+    swapped = dialects.swiss_words(line)
+    assert swapped.startswith("I ha hüt nöd en chliine Kafi")
+    assert dialects.reads_swiss_german(swapped)
+
+
+def test_a_rewrite_left_in_standard_german_is_swapped_after():
+    lines = ["Ich habe heute nichts gemacht", "es ist nicht so einfach"]
+    unchanged = lambda *a, **k: _Answer("1. Ich habe heute nichts gemacht\n2. es ist nicht so einfach")
+    assert dialects.rewrite(lines, "http://x/v1", post=unchanged) == ["I ha hüt nüt gmacht", "es isch nöd so eifach"]
