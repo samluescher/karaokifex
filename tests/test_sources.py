@@ -54,3 +54,78 @@ def test_bandcamp_keys_and_covers():
         "bandcamp:disasterfantasy.bandcamp.com/track/anywhere"
     info = {"thumbnails": [{"url": "https://f4.bcbits.com/img/a123_5.jpg"}, {"url": "https://f4.bcbits.com/img/a123_10.jpg"}]}
     assert bandcamp.cover_url(info) == "https://f4.bcbits.com/img/a123_0.jpg"
+
+
+def test_any_encoding_is_read_as_unicode():
+    word = "Bümpliz – Gränni"
+    assert lyrics.decode_text(word.encode("utf-8")) == (word, "utf-8")
+    assert lyrics.decode_text(word.encode("utf-8-sig"))[0] == word
+    assert lyrics.decode_text(word.encode("utf-16"))[0] == word
+    assert lyrics.decode_text(("ä Kafi am Pischterand " * 4).encode("cp1252"), "windows-1252")[0].startswith("ä Kafi")
+    # a page naming Latin-1 but written in UTF-8: UTF-8 wins
+    assert lyrics.decode_text(word.encode("utf-8"), "iso-8859-1")[0] == word
+    # no charset named: Latin-script text in Windows-1252, Cyrillic guessed
+    assert lyrics.decode_text("Äs isch Zyt für üs zwöi".encode("cp1252")) == ("Äs isch Zyt für üs zwöi", "cp1252")
+    assert lyrics.decode_text(("Где же ты, моя любимая, где же ты " * 3).encode("cp1251"))[0].startswith("Где же ты")
+    # "u" and a combining diaeresis come out as the one character
+    assert lyrics.decode_text("Bümpliz".encode("utf-8"))[0] == "Bümpliz"
+
+
+def test_given_lyrics_skip_notes_and_any_encoding(tmp_path: Path):
+    given = tmp_path / "given.txt"
+    given.write_bytes("# taken from: https://example.org\n# agrees 80%: x\nÄs isch Zyt\n\nfür üs zwöi\n".encode("cp1252"))
+    got = lyrics.from_file(given, "A", "S")
+    assert [line.text for line in got.lines] == ["Äs isch Zyt", "für üs zwöi"]
+
+
+def test_web_lyrics_say_where_they_came_from():
+    kept = ["we go down to the river", "and the river takes us home"] * 5
+    pages = [{"url": "https://genius.com/x", "lines": kept, "how": 'its lyrics block (the element with data-lyrics-container="true")',
+              "removed": ["[Chorus]"]},
+             {"url": "https://songtexte.de/x", "lines": kept[:8], "how": "the longest run of short lines on it", "removed": []},
+             {"url": "https://www.songtexte.com/x", "why": "HTTP 202, no page (a bot check)"}]
+    head = lyrics_web.web_header("A - S", "nothing for it (asked first)", "https://genius.com/x", pages)
+    assert all(line.startswith("#") for line in head)
+    text = "\n".join(head)
+    assert "taken from: https://genius.com/x" in text and 'data-lyrics-container="true"' in text
+    assert "cleaned out: [Chorus]" in text and "agrees 100%: https://songtexte.de/x" in text
+    assert "looked at, nothing: https://www.songtexte.com/x (HTTP 202" in text
+
+
+def test_lrclib_is_asked_before_the_web(tmp_path: Path, monkeypatch):
+    found = lyrics.Lyrics(lrclib_id=7, artist="A", track="S", album=None, duration=None, synced=True,
+                          lines=(lyrics.LyricLine(1.5, "first"), lyrics.LyricLine(63.25, "second")))
+    monkeypatch.setattr(lyrics, "fetch_lyrics", lambda *a, **k: [found])
+    monkeypatch.setattr(lyrics_web, "find", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the web searched")))
+    out = tmp_path / "out.txt"
+    assert lyrics_web.main(["A - S", "-o", str(out)]) == 0
+    written = out.read_text(encoding="utf-8").splitlines()
+    assert written[0].startswith("# A - S: lyrics from lrclib #7") and written[2:] == ["[00:01.50]first", "[01:03.25]second"]
+    assert [line.text for line in lyrics.from_file(out, "A", "S").lines] == ["first", "second"]
+
+
+def test_the_pipeline_asks_lrclib_before_a_given_file(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+    from karaokifex import pipeline
+    given = tmp_path / "given.txt"
+    given.write_text("given one\ngiven two\n", encoding="utf-8")
+    job = SimpleNamespace(artist="A", song="S", info=SimpleNamespace(duration=None),
+                          config=SimpleNamespace(lyrics_file=given), workspace=SimpleNamespace(lyrics_json=tmp_path / "lyrics.json"))
+    ctx = SimpleNamespace(note=lambda *_: None)
+    hit = lyrics.Lyrics(lrclib_id=7, artist="A", track="S", album=None, duration=None, synced=False,
+                        lines=(lyrics.LyricLine(None, "from lrclib"),))
+    monkeypatch.setattr(lyrics, "fetch_lyrics", lambda *a, **k: [hit])
+    pipeline._lyrics(job, ctx)
+    assert lyrics.load_lyrics(job.workspace.lyrics_json)[0].lrclib_id == 7
+    monkeypatch.setattr(lyrics, "fetch_lyrics", lambda *a, **k: [])
+    assert "lrclib miss" in pipeline._lyrics(job, ctx)
+    assert [line.text for line in lyrics.load_lyrics(job.workspace.lyrics_json)[0].lines] == ["given one", "given two"]
+
+
+def test_only_the_songs_own_page_counts():
+    song = "Ä Kafi am Pischterand"
+    assert lyrics_web.about_song("https://www.musixmatch.com/lyrics/X/%C3%84-Kafi-am-Pischterand", "", song)
+    assert lyrics_web.about_song("https://example.org/p/123", "<title>Kafi am Pischterand – Songtext</title>", song)
+    assert not lyrics_web.about_song("https://www.songtexte.com/artist/patent-ochsner-23d6cce7.html",
+                                     "<title>Patent Ochsner Songtexte</title>", song)
+    assert lyrics_web.about_song("https://genius.com/Patent-ochsner-w-nuss-vo-bumpliz-lyrics", "", "W. Nuss vo Bümpliz")

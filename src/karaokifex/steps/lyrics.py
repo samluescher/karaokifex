@@ -6,9 +6,11 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+import charset_normalizer
 import requests
 
 from karaokifex import __version__
@@ -163,13 +165,56 @@ def fetch_lyrics(artist: str, song: str, duration: float | None, *, get: HttpGet
     return [lyrics for c in ranked[:limit] if (lyrics := _to_lyrics(c, artist, song)).lines]
 
 
+_BOMS = ((b"\xef\xbb\xbf", "utf-8-sig"), (b"\xff\xfe\x00\x00", "utf-32"), (b"\x00\x00\xfe\xff", "utf-32"),
+         (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16"))
+
+
+def decode_text(data: bytes, declared: str | None = None) -> tuple[str, str]:
+    """Text of any encoding as Unicode (NFC: "ü" one character), and the encoding it was read as.
+
+    A byte-order mark decides; else UTF-8 when it reads as such (Latin-1 text almost never does), else
+    the charset the source names; else Windows-1252 when the bytes beyond ASCII stand alone, as the
+    umlauts and accents in a Latin-script text do (a guess at a few lines of Swiss German comes out
+    Shift JIS); else charset_normalizer's guess, for Cyrillic, Greek, CJK and the like.
+    """
+    encoding = next((name for bom, name in _BOMS if data.startswith(bom)), None)
+    if not encoding and b"\x00" not in data:          # NULs: UTF-16 without a mark, for the guess
+        try:
+            data.decode("utf-8")
+            encoding = "utf-8"
+        except UnicodeDecodeError:
+            pass
+    if not encoding and declared:
+        try:
+            data.decode(declared)
+            encoding = declared.lower()
+        except (LookupError, UnicodeDecodeError):
+            pass
+    if not encoding:
+        high = sum(b >= 0x80 for b in data)
+        paired = sum(a >= 0x80 and b >= 0x80 for a, b in zip(data, data[1:]))
+        try:
+            if paired * 4 < high:
+                data.decode("cp1252")
+                encoding = "cp1252"
+        except UnicodeDecodeError:
+            pass
+    if not encoding:
+        guess = charset_normalizer.from_bytes(data).best()
+        encoding = guess.encoding if guess else "cp1252"
+    return unicodedata.normalize("NFC", data.decode(encoding, errors="replace")), encoding
+
+
 def from_file(path: Path, artist: str, song: str) -> Lyrics:
     """Lyrics given with the song (--lyrics-file): LRC if it has timestamps, else plain text a line a line.
 
     Where they come from is the caller's business: typed out by hand, in a dialect's own spelling, or
-    found on the web by karaokifex-lyrics-web. They align like lrclib's.
+    found on the web by karaokifex-lyrics-web. They align like lrclib's. The file's encoding is
+    detected (decode_text); lines starting with # are notes -- where the lyrics came from -- and skipped.
     """
-    text = path.read_text(encoding="utf-8-sig")
+    text, encoding = decode_text(path.read_bytes())
+    log.info("%s: read as %s", path.name, encoding)
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     lines = parse_lrc(text) if _TIMESTAMP.search(text) else []
     synced = bool(lines)
     return Lyrics(lrclib_id=None, artist=artist, track=song, album=None, duration=None, synced=synced,

@@ -107,8 +107,12 @@ The lyrics are known, so the job is finding *when* each word is sung:
 
 Whisper is prompted with the lyrics and set to the lyrics' language (detected from their text, or
 `--language`). `--mix-vote` additionally transcribes the full mix and lets both transcriptions vote,
-at the cost of a second whisperx pass. If lrclib has no lyrics for the song, the lines are built from
-the whisperx transcription instead.
+at the cost of a second whisperx pass. lrclib is always asked first. If it has no lyrics for the song,
+those given with `--lyrics-file` are used (plain text a line a line, or LRC; any encoding, detected and
+kept as UTF-8; `#` lines are notes), and without either the lines are built from the whisperx
+transcription instead. `karaokifex-lyrics-web "Artist - Song"` writes such a file: lrclib's lyrics if
+it has them, else the version most lyric sites on the web agree on, with `#` lines saying where it was
+found and how.
 
 To check timing, `--debug-ass` renders `(Karaoke debug).mkv` with each word coloured by what timed it:
 violet LRC tag, green forced alignment, cyan whisperx, orange lrclib line start, red interpolated.

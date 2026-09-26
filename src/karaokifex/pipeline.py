@@ -220,13 +220,17 @@ def run_pipeline(config: Config) -> PipelineResult:
 
 
 def _lyrics(job: Job, ctx: TaskContext) -> str:
-    if job.config.lyrics_file:
-        given = lyrics.from_file(job.config.lyrics_file, job.artist, job.song)
-        lyrics.save_lyrics([given] if given.lines else [], job.workspace.lyrics_json)
-        log.info("lyrics given: %s, %d lines", job.config.lyrics_file.name, len(given.lines))
-        return lyrics.describe(given)
+    """lrclib first, always; lyrics given with the song (--lyrics-file) only when it has none; then whisperx."""
     ctx.note(f"searching “{job.artist} – {job.song}”…")
     found = lyrics.fetch_lyrics(job.artist, job.song, job.info.duration)
+    if found and job.config.lyrics_file:
+        log.info("lrclib has the song: the lyrics given (%s) are not used", job.config.lyrics_file.name)
+    if not found and job.config.lyrics_file:
+        given = lyrics.from_file(job.config.lyrics_file, job.artist, job.song)
+        lyrics.save_lyrics([given] if given.lines else [], job.workspace.lyrics_json)
+        log.info("none on lrclib: lyrics given, %s, %d lines", job.config.lyrics_file.name, len(given.lines))
+        if given.lines:
+            return lyrics.describe(given) + " (lrclib miss)"
     lyrics.save_lyrics(found, job.workspace.lyrics_json)
     if not found:
         log.warning("no lyrics on lrclib — the whisperx transcription will be used instead")
