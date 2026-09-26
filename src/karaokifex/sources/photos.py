@@ -2,14 +2,17 @@
 
     press_photos(artist, into, bandcamp=host, limit=6, cache=dir) -> [Photo(path, image, page, how), ...]
 
-First the artist's own: the band photo on their Bandcamp page, and their picture on Deezer (its open
-API: the artist's own image, 1000x1000). Then pages about them: the official links MusicBrainz knows
-(its open API), and a web search (DuckDuckGo's HTML search, which allows it, a query every two
-seconds) for press, their label, their own sites -- keeping only pages whose title or address names
-them -- and from each page its share picture (og:image) and
-the photos in it that name the artist in their alt text or file name, or that a camera named (DSC_8332.jpg:
-in an article about the artist, most likely a photo of them). A site whose robots.txt says
-no is left alone; nothing that asks for proof of being a person is answered.
+First the artist's own and the open databases', which never ask for proof of being a person: the band
+photo on their Bandcamp page; their picture on Deezer (its open API: the artist's own image, 1000x1000);
+their photos on TheAudioDB (its free API: a portrait and up to four wide fanart shots); and their image
+on Wikidata, from Wikimedia Commons, for the Wikidata entry MusicBrainz links them to. Then pages about
+them: the official links MusicBrainz knows (its open API) and -- only while those haven't found enough --
+a web search (DuckDuckGo's HTML search, which allows it: the QUERIES, PAUSE seconds apart)
+for press, their label, their own sites -- keeping only pages whose title or address names them -- and
+from each page its share picture (og:image) and the photos in it that name the artist in their alt text
+or file name, or that a camera named (DSC_8332.jpg: in an article about the artist, most likely a photo of
+them). Every request says what it is (USER_AGENT), not a browser. A site whose robots.txt says no is left
+alone; nothing that asks for proof of being a person is answered.
 
 Kept: photos large enough for a 1080p frame (the short side at least MIN_SHORT pixels), not an album
 cover (Bandcamp's a<number> images: the video has its cover already) nor a picture whose name or alt
@@ -34,21 +37,21 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
 import requests
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+USER_AGENT = "karaokifex/0.1 (press photos for a karaoke video; https://github.com/samluescher/karaokifex)"
 SEARCH = "https://html.duckduckgo.com/html/?q={q}"
-QUERIES = ('"{artist}" band', '"{artist}" band press photo', '"{artist}" interview', '"{artist}" live', '"{artist}" new single')
+QUERIES = ('"{artist}" band press photo', '"{artist}" interview')
 # sites whose pages need a login or build themselves in the browser: nothing to read there
 SKIP = ("bandcamp.com", "youtube.", "youtu.be", "spotify.", "music.apple.", "instagram.", "facebook.", "tiktok.",
         "twitter.", "x.com", "soundcloud.", "deezer.", "tidal.", "amazon.", "shazam.")
 MAX_PAGES = 14
-PAUSE = 2.0              # seconds between two web searches
+PAUSE = 6.0              # seconds between two web searches
 CACHE_DAYS = 14
 MB_AGENT = "karaokifex/0.1 (https://github.com/samluescher/karaokifex)"
 MAX_CANDIDATES = 24
@@ -184,8 +187,29 @@ def deezer_photo(artist: str, *, get: Get = requests.get) -> str | None:
     return url if "/artist/" in url and "/artist//" not in url else None
 
 
-def official_pages(artist: str, *, get: Get = requests.get) -> list[tuple[str, str]]:
-    """The artist's official links on MusicBrainz (its open API: an exact name, its best match), as pages to read."""
+def audiodb_photos(artist: str, *, get: Get = requests.get) -> list[tuple[str, str, str]]:
+    """The artist's photos on TheAudioDB (its free API, the public test key, 123): their portrait and wide
+    fanart shots, for the name it has exactly; (image, page, how)."""
+    try:
+        r = get("https://www.theaudiodb.com/api/v1/json/123/search.php", params={"s": artist}, headers={"User-Agent": USER_AGENT}, timeout=20)
+        r.raise_for_status()
+        hit = next((a for a in (r.json() or {}).get("artists") or [] if plain(a.get("strArtist") or "") == plain(artist)), None)
+    except (requests.RequestException, ValueError):
+        return []
+    if not hit:
+        return []
+    page = f"https://www.theaudiodb.com/artist/{hit.get('idArtist')}"
+    out = []
+    for key, how in (("strArtistThumb", "their portrait on TheAudioDB"), ("strArtistFanart", "a fanart shot on TheAudioDB"),
+                     ("strArtistFanart2", "a fanart shot on TheAudioDB"), ("strArtistFanart3", "a fanart shot on TheAudioDB"),
+                     ("strArtistFanart4", "a fanart shot on TheAudioDB"), ("strArtistWideThumb", "a wide shot on TheAudioDB")):
+        if (url := hit.get(key)) and str(url).startswith("http"):
+            out.append((url, page, how))
+    return out
+
+
+def musicbrainz_links(artist: str, *, get: Get = requests.get) -> list[tuple[str, str]]:
+    """The links MusicBrainz knows for the artist (its open API: an exact name, its best match): (type, url)."""
     try:
         r = get("https://musicbrainz.org/ws/2/artist/", params={"query": f'artist:"{artist}"', "fmt": "json", "limit": 3},
                 headers={"User-Agent": MB_AGENT}, timeout=20)
@@ -199,8 +223,40 @@ def official_pages(artist: str, *, get: Get = requests.get) -> list[tuple[str, s
         r.raise_for_status()
     except (requests.RequestException, ValueError):
         return []
-    urls = [rel.get("url", {}).get("resource", "") for rel in r.json().get("relations", [])
-            if rel.get("type") in ("official homepage", "social network", "image", "fanpage", "biography", "interview")]
+    return [(rel.get("type", ""), rel.get("url", {}).get("resource", "")) for rel in r.json().get("relations", [])]
+
+
+def commons_photos(links: list[tuple[str, str]], *, get: Get = requests.get) -> list[tuple[str, str, str]]:
+    """The artist's images on Wikimedia Commons: the image their Wikidata entry gives (P18), for the entry
+    MusicBrainz links them to, and any Commons file MusicBrainz links as their image; (image, page, how)."""
+    files: list[tuple[str, str]] = []
+    for kind, url in links:
+        if kind == "image" and "commons.wikimedia.org/wiki/File:" in url:
+            files.append((unquote(url.split("/wiki/File:", 1)[1]), "their image on MusicBrainz, from Wikimedia Commons"))
+        if kind == "wikidata" and (m := re.search(r"(Q\d+)", url)):
+            try:
+                r = get(f"https://www.wikidata.org/wiki/Special:EntityData/{m.group(1)}.json", headers={"User-Agent": USER_AGENT}, timeout=20)
+                r.raise_for_status()
+                claims = next(iter(r.json().get("entities", {}).values()), {}).get("claims", {})
+            except (requests.RequestException, ValueError, StopIteration):
+                continue
+            for c in claims.get("P18", []):
+                name = c.get("mainsnak", {}).get("datavalue", {}).get("value")
+                if isinstance(name, str):
+                    files.append((name, "their image on Wikidata, from Wikimedia Commons"))
+    out = []
+    # a file once, however its name is spelt (Commons takes spaces and underscores alike)
+    for name, how in {n.replace(" ", "_"): h for n, h in reversed(files)}.items():
+        title = name
+        out.append((f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(title)}?width=2000",
+                    f"https://commons.wikimedia.org/wiki/File:{quote(title)}", how))
+    return out
+
+
+def official_pages(artist: str, *, get: Get = requests.get, links: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
+    """The artist's official links on MusicBrainz, as pages to read."""
+    links = musicbrainz_links(artist, get=get) if links is None else links
+    urls = [u for kind, u in links if kind in ("official homepage", "social network", "fanpage", "biography", "interview")]
     return [(u, "an official link on MusicBrainz") for u in urls if u.startswith("http") and not any(s in urlparse(u).netloc for s in SKIP)]
 
 
@@ -277,7 +333,13 @@ def press_photos(artist: str, into: Path, *, bandcamp: str | None = None, cover:
         found.append((bp, f"https://{bandcamp}/", "the band photo on their Bandcamp page"))
     if dz := deezer_photo(artist, get=get):
         found.append((dz, "https://www.deezer.com/", "their picture on Deezer"))
-    found += candidates(artist, official_pages(artist, get=get) + search(artist, get=get), get=get)
+    found += audiodb_photos(artist, get=get)
+    links = musicbrainz_links(artist, get=get)
+    found += commons_photos(links, get=get)
+    found += candidates(artist, official_pages(artist, get=get, links=links), get=get)
+    # the web searched only while the open databases and the official pages haven't found enough to choose from
+    if len(found) < limit + 2:
+        found += candidates(artist, search(artist, get=get), get=get)
     kept: list[Photo] = []
     # the cover is in the video already: a copy of it found on a page is no new photo
     hashes = [h for h in [ahash(cover, ffmpeg) if cover else None] if h is not None]

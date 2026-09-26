@@ -175,3 +175,39 @@ def test_press_photos_are_kept_per_artist(tmp_path: Path):
     back = photos.from_cache(tmp_path / "cache", tmp_path / "into")
     assert back and back[0].image == "https://x/1.jpg" and back[0].path.read_bytes() == b"jpeg"
     assert photos.from_cache(tmp_path / "none", tmp_path / "into") is None
+
+
+class _Answer:
+    def __init__(self, data=None, text="", status=200):
+        self._data, self.text, self.status_code = data, text, status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(str(self.status_code))
+
+    def json(self):
+        return self._data
+
+
+def test_the_open_databases_give_their_photos():
+    from karaokifex.sources import photos
+
+    def get(url, params=None, headers=None, timeout=None):
+        assert "Mozilla" not in (headers or {}).get("User-Agent", "")      # says what it is
+        if "theaudiodb" in url:
+            return _Answer({"artists": [{"strArtist": "Disaster Fantasy", "idArtist": "7",
+                                         "strArtistThumb": "https://r2.theaudiodb.com/a/thumb.jpg",
+                                         "strArtistFanart": "https://r2.theaudiodb.com/a/fan1.jpg", "strArtistFanart2": None}]})
+        if "wikidata.org" in url:
+            return _Answer({"entities": {"Q42": {"claims": {"P18": [{"mainsnak": {"datavalue": {"value": "Disaster Fantasy live.jpg"}}}]}}}})
+        raise AssertionError(url)
+    got = photos.audiodb_photos("Disaster Fantasy", get=get)
+    assert [g[0] for g in got] == ["https://r2.theaudiodb.com/a/thumb.jpg", "https://r2.theaudiodb.com/a/fan1.jpg"]
+    assert got[0][1] == "https://www.theaudiodb.com/artist/7"
+    assert photos.audiodb_photos("Somebody Else", get=get) == []
+    commons = photos.commons_photos([("wikidata", "https://www.wikidata.org/wiki/Q42"), ("official homepage", "https://df.example")], get=get)
+    assert commons == [("https://commons.wikimedia.org/wiki/Special:FilePath/Disaster_Fantasy_live.jpg?width=2000",
+                        "https://commons.wikimedia.org/wiki/File:Disaster_Fantasy_live.jpg", "their image on Wikidata, from Wikimedia Commons")]
+    assert photos.official_pages("Disaster Fantasy", links=[("wikidata", "https://www.wikidata.org/wiki/Q42"),
+                                                            ("official homepage", "https://df.example")]) == [("https://df.example", "an official link on MusicBrainz")]
