@@ -301,7 +301,9 @@ def describe_song(target: Path, artist: str, song: str, language: str | None = N
 def _quality(job: Job, ctx: TaskContext) -> str:
     ws = job.workspace
     ffprobe = job.ffmpeg.ffprobe
-    source = {**quality.summary(ws.source, ffprobe=ffprobe), "from": "the download"}
+    # the download as it came: never re-encoded, and kept as source.mkv with --keep-download
+    source = {**quality.summary(ws.source, ffprobe=ffprobe), "from": "the download", "reencoded": False,
+              **({"file": ws.source.name} if job.config.keep_download else {})}
     renders = {"karaoke": job.output_video, **({"original": job.original_video} if job.config.keep_source else {})}
     q = quality.write_quality(ws.quality_json, source=source, renders=renders, ffprobe=ffprobe)
     v, a = source.get("video") or {}, source.get("audio") or {}

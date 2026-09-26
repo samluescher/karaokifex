@@ -101,6 +101,9 @@ log = logging.getLogger("karaokifex")
 @click.option("--debug-ass", is_flag=True,
               help="Render '(Karaoke debug).mkv' with each word coloured by what timed it "
                    "(green forced, cyan whisper, violet LRC tag, orange LRC line, red interpolated).")
+@click.option("--keep-download", is_flag=True,
+              help="Keep the download as it came -- the best video and sound there are, merged into one file, "
+                   "never re-encoded -- as 'source.mkv' beside the renders; with --quality, quality.json names it.")
 @click.option("--keep-source", is_flag=True,
               help="Also keep the original video with its own sound (vocals included) as '(Original).mkv', "
                    "made like the karaoke video: the same format, resolution and --browser-friendly MP4.")
@@ -131,7 +134,7 @@ def main(url: str, **options: object) -> None:
     if not result.ok:
         console.print("Temporary files were kept, so running the same command again resumes where it stopped.")
         raise SystemExit(1)
-    clean_up(result.job.workspace, keep_temp=config.keep_temp)
+    clean_up(result.job.workspace, keep_temp=config.keep_temp, keep_download=config.keep_download)
 
 
 def show_result(result: PipelineResult) -> None:
@@ -152,16 +155,18 @@ def show_result(result: PipelineResult) -> None:
     print_summary(result.ok, details)
 
 
-def clean_up(workspace: Workspace, *, keep_temp: bool) -> None:
-    """Delete the temporary files of a successful run, unless --keep-temp asks to keep them."""
-    temp_files = workspace.temp_files()
+def clean_up(workspace: Workspace, *, keep_temp: bool, keep_download: bool = False) -> None:
+    """Delete the temporary files of a successful run, unless --keep-temp asks to keep them; the download
+    stays with --keep-download."""
+    keep = [workspace.source] if keep_download else []
+    temp_files = workspace.temp_files(keep)
     if not temp_files:
         return
     total = human_size(sum(path.stat().st_size for path in temp_files))
     if keep_temp:
         console.print(f"Kept {len(temp_files)} temporary files ({total}) in {workspace.root}.")
         return
-    removed = workspace.cleanup()
+    removed = workspace.cleanup(keep)
     console.print(f"🧹 Removed {len(removed)} temporary files ({total}).")
 
 

@@ -85,8 +85,10 @@ temporary files. It keeps the video, the ASS file, the karaoke audio track, the 
 timings (`timings.json`), and the video's metadata (`info.json`, `metadata.json`). `--keep-source` also
 keeps the original: the video with its own sound (vocals and all), as `<Artist - Song> (Original).mkv`.
 It is made like the karaoke video, in the same format and resolution (an MP4 with `--browser-friendly`),
-and its audio is copied when that format takes it. The raw download (`source.mkv`) is still deleted;
-`--keep-temp` keeps every file.
+and its audio is copied when that format takes it. The raw download (`source.mkv`) is deleted unless
+`--keep-download` keeps it: the best video and sound there were, merged into one file and never
+re-encoded, which `quality.json` then names (`source.file`, and `reencoded: false`). `--keep-temp` keeps
+every file.
 
 ### How the words get their timing
 

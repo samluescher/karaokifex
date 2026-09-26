@@ -53,6 +53,15 @@ def test_cleanup_keeps_the_original_but_not_the_download(tmp_path):
     assert original.exists()
 
 
+def test_cleanup_keeps_the_download_when_asked(tmp_path):
+    ws = Workspace.create(tmp_path, "Artist - Song")
+    for path in (ws.source, ws.audio):
+        path.write_text("x")
+    assert ws.temp_files([ws.source]) == [ws.audio]
+    assert ws.cleanup([ws.source]) == [ws.audio]
+    assert ws.source.exists()
+
+
 def test_cleanup_keeps_karaoke_videos_from_earlier_runs(tmp_path):
     ws = Workspace.create(tmp_path, "Artist [Live] - Song")  # glob metacharacters in the name
     earlier = ws.final_video.with_suffix(".mp4")
