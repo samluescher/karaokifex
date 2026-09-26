@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -159,14 +160,14 @@ class Workspace:
                 self.info_json, self.metadata_json, self.song_json, self.quality_json}
         return frozenset(keep | {p for p in earlier_renders if ".partial." not in p.name})
 
-    def temp_files(self) -> list[Path]:
-        """Every file in the workspace that is not an artifact."""
-        keep = {path.resolve() for path in self.artifacts()}
+    def temp_files(self, keep_too: Iterable[Path] = ()) -> list[Path]:
+        """Every file in the workspace that is not an artifact (nor one of `keep_too`: the download, kept)."""
+        keep = {path.resolve() for path in (*self.artifacts(), *keep_too)}
         return sorted(p for p in self.root.rglob("*") if p.is_file() and p.resolve() not in keep)
 
-    def cleanup(self) -> list[Path]:
-        """Delete all temp files (and folders left empty); returns what was removed."""
-        removed = self.temp_files()
+    def cleanup(self, keep_too: Iterable[Path] = ()) -> list[Path]:
+        """Delete all temp files (and folders left empty) but `keep_too`; returns what was removed."""
+        removed = self.temp_files(keep_too)
         for path in removed:
             path.unlink(missing_ok=True)
         directories = sorted((d for d in self.root.rglob("*") if d.is_dir()), key=lambda d: len(d.parts), reverse=True)
