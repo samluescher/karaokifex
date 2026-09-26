@@ -57,8 +57,9 @@ def probe(url: str) -> VideoInfo:
         return VideoInfo.from_ytdlp(ydl.sanitize_info(info))
 
 
-def download(url: str, target: Path, on_progress: ProgressCallback, *, prefer_h264: bool = False) -> Path:
-    """Download best video + best audio into `target` (always an .mkv)."""
+def download(url: str, target: Path, on_progress: ProgressCallback, *, prefer_h264: bool = False,
+             ratelimit: int | None = None) -> Path:
+    """Download best video + best audio into `target` (always an .mkv); at most `ratelimit` bytes a second."""
 
     def progress_hook(status: dict[str, Any]) -> None:
         if status["status"] == "downloading":
@@ -82,6 +83,7 @@ def download(url: str, target: Path, on_progress: ProgressCallback, *, prefer_h2
         progress_hooks=[progress_hook],
         postprocessor_hooks=[postprocessor_hook],
         **({"format_sort": PREFER_H264} if prefer_h264 else {}),
+        **({"ratelimit": ratelimit} if ratelimit else {}),
     )
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([url])
