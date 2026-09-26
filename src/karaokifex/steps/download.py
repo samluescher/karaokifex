@@ -112,8 +112,9 @@ def probe(url: str, *, ffprobe: str = "ffprobe") -> VideoInfo:
 
 
 def download(url: str, target: Path, on_progress: ProgressCallback, *, prefer_h264: bool = False,
-             ffmpeg_path: str = "ffmpeg") -> Path:
-    """Download best video + best audio into `target` (always an .mkv); a local file is copied in as it is."""
+             ffmpeg_path: str = "ffmpeg", ratelimit: int | None = None) -> Path:
+    """Download best video + best audio into `target` (always an .mkv), at most `ratelimit` bytes a second; a
+    local file is copied in as it is."""
     if (path := local_file(url)) is not None:
         on_progress(None, f"copying {path.name}")
         ffmpeg.input(str(path)).output(str(target), c="copy", map=0).run(cmd=ffmpeg_path, overwrite_output=True, quiet=True)
@@ -142,6 +143,7 @@ def download(url: str, target: Path, on_progress: ProgressCallback, *, prefer_h2
         progress_hooks=[progress_hook],
         postprocessor_hooks=[postprocessor_hook],
         **({"format_sort": PREFER_H264} if prefer_h264 else {}),
+        **({"ratelimit": ratelimit} if ratelimit else {}),
     )
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([url])
