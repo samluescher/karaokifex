@@ -134,3 +134,24 @@ def test_only_the_songs_own_page_counts():
     assert not lyrics_web.about_song("https://www.songtexte.com/artist/patent-ochsner-23d6cce7.html",
                                      "<title>Patent Ochsner Songtexte</title>", song)
     assert lyrics_web.about_song("https://genius.com/Patent-ochsner-w-nuss-vo-bumpliz-lyrics", "", "W. Nuss vo Bümpliz")
+
+
+def test_a_slideshow_covers_the_track_and_the_cover_comes_round():
+    assert bandcamp.slides(240, 3) == 14             # 20 s slides overlapping by 2 s: 18 s each after the first
+    assert bandcamp.slides(10, 3) == 1
+    assert bandcamp.order(3, 7) == [0, 1, 2, 3, 1, 0, 2]
+    assert bandcamp.order(0, 3) == [0, 0, 0]
+    graph = bandcamp.slideshow_filter(1080, 3)
+    assert graph.count("zoompan") == 3 and "offset=18.000" in graph and "offset=36.000" in graph and graph.endswith("[v]")
+
+
+def test_press_photos_name_the_artist_and_are_no_covers():
+    from karaokifex.sources import photos
+    assert photos.names("Disaster Fantasy", "Dark Disco Duo Disaster Fantasy Debut Single")
+    assert photos.names("Disaster Fantasy", "https://post-punk.com/dark-disco-duo-disaster-fantasy-debut/")
+    assert not photos.names("Disaster Fantasy", "DESASTER Announces New Album")
+    for name in ("Anywhere-Cover-scaled.jpg", "DF_TheHourglass-Artwork--scaled.jpg", "DF_VinylImage_860x.jpg", "tour-poster.png"):
+        assert photos.NOT_A_PHOTO.search(name)
+    assert not photos.NOT_A_PHOTO.search("Disaster-Fantasy.jpg")
+    assert photos.ALBUM_ART.search("/img/a4085427402_10.jpg") and not photos.ALBUM_ART.search("/img/0030665963_0.jpg")
+    assert photos.near(0b1011, 0b1001) and not photos.near(0, (1 << 20) - 1)
