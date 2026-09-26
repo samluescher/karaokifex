@@ -6,7 +6,8 @@ Bandcamp gives a track's sound and its cover art. This makes a video of them for
 then treats it like any other: the cover, whole, over a blurred copy of itself filling the frame,
 slowly zooming in and drifting, for as long as the track lasts, with the track's sound. Beside it,
 <file>.info.json says what the source said -- its key (bandcamp:<host>/track/<name>), title,
-artist, track, album, duration -- which karaokifex reads for a local file.
+artist, track, album, duration -- which karaokifex reads for a local file. The picture is composed
+once and zoomed from there, so a track takes a fraction of its length to make.
 
     karaokifex "<the video>" -a Artist -s Song ...      (or Compute's make_song.py with it)
 
@@ -51,19 +52,23 @@ def cover_url(info: dict) -> str | None:
     return re.sub(r"_\d+\.(jpg|png)$", r"_0.\1", url) if url else None
 
 
+def still_filter(height: int) -> str:
+    """The picture, once: the cover whole over a blurred copy of itself filling a 16:9 frame, at twice
+    the video's size, so the zoom that follows has pixels to spare."""
+    w, h = height * 32 // 9, height * 2
+    return (f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=80:2,eq=brightness=-0.12[bg];"
+            f"[0:v]scale={h}:{h}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]")
+
+
 def video_filter(height: int, seconds: float) -> str:
-    """The cover whole, over a blurred copy of itself filling a 16:9 frame, zooming in slowly and drifting."""
+    """That picture, zooming in slowly and drifting for the track's length: every frame from the one
+    picture decoded once (zoompan's d), rather than the cover decoded, scaled and blurred afresh 25
+    times a second, which took a track ten times its length."""
     width = height * 16 // 9
-    frames = max(1, int(seconds * FPS))
+    frames = max(1, int(seconds * FPS) + FPS)
     zoom = f"1+{ZOOM}*on/{frames}"
-    return (
-        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
-        f"boxblur=40:2,eq=brightness=-0.12[bg];"
-        f"[0:v]scale={height * 2}:{height * 2}:force_original_aspect_ratio=decrease,"
-        f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)+sin(on/{FPS * 9})*iw*0.02':y='ih/2-(ih/zoom/2)+cos(on/{FPS * 11})*ih*0.02'"
-        f":d=1:s={height}x{height}:fps={FPS}[fg];"
-        f"[bg][fg]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p[v]"
-    )
+    return (f"[0:v]zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)+sin(on/{FPS * 9})*iw*0.02':y='ih/2-(ih/zoom/2)+cos(on/{FPS * 11})*ih*0.02'"
+            f":d={frames}:s={width}x{height}:fps={FPS},format=yuv420p[v]")
 
 
 def make(url: str, out: Path, *, height: int = HEIGHT, ffmpeg: str = "ffmpeg") -> Path:
@@ -86,7 +91,10 @@ def make(url: str, out: Path, *, height: int = HEIGHT, ffmpeg: str = "ffmpeg") -
         response.raise_for_status()
         cover.write_bytes(response.content)
         target = out / f"{safe(f'{artist} - {track}')}.mp4"
-        command = [ffmpeg, "-y", "-loglevel", "error", "-loop", "1", "-framerate", str(FPS), "-i", str(cover),
+        still = tmp_dir / "still.png"
+        subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", str(cover), "-filter_complex", still_filter(height),
+                        "-map", "[v]", "-frames:v", "1", str(still)], check=True)
+        command = [ffmpeg, "-y", "-loglevel", "error", "-i", str(still),
                    "-i", str(audio), "-filter_complex", video_filter(height, duration or 600),
                    "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                    "-tune", "stillimage", "-c:a", "aac", "-b:a", "256k", "-shortest", "-movflags", "+faststart",
