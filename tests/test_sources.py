@@ -45,8 +45,13 @@ def test_a_local_file_is_a_source_a_link_is_not(tmp_path: Path):
     assert download.local_file(video.as_uri()) == video
     assert download.local_file("https://www.youtube.com/watch?v=abc") is None
     assert download.local_file(str(tmp_path / "missing.mp4")) is None
-    Path(f"{video}.info.json").write_text('{"id": "bandcamp:x.bandcamp.com/track/y", "title": "T"}', encoding="utf-8")
+    Path(f"{video}.info.json").write_text('{"id": "bandcamp:x.bandcamp.com/track/y", "title": "T", "made": "still"}',
+                                          encoding="utf-8")
     assert download.sidecar(video)["id"] == "bandcamp:x.bandcamp.com/track/y"
+    from karaokifex.models import VideoInfo
+    # made rides along into the song's info.json, and an info.json with fields it doesn't know still reads
+    info = VideoInfo(id="bandcamp:x", title="T", made="still")
+    assert VideoInfo.from_dict({**info.to_dict(), "later": 1}).made == "still"
 
 
 def test_bandcamp_keys_and_covers():

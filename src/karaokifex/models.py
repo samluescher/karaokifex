@@ -18,6 +18,9 @@ class VideoInfo:
     artist: str | None = None
     track: str | None = None
     uploader: str | None = None
+    # how the video was made, when it was made rather than shot: "still" for a still picture zooming slowly
+    # (karaokifex-bandcamp's), which a player may want to liven up; None for a video as found
+    made: str | None = None
 
     @classmethod
     def from_ytdlp(cls, info: dict[str, Any]) -> VideoInfo:
@@ -38,7 +41,8 @@ class VideoInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> VideoInfo:
-        return cls(**data)
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,9 @@ Bandcamp gives a track's sound and its cover art. This makes a video of them for
 then treats it like any other: the cover, whole, over a blurred copy of itself filling the frame,
 slowly zooming in and drifting, for as long as the track lasts, with the track's sound. Beside it,
 <file>.info.json says what the source said -- its key (bandcamp:<host>/track/<name>), title,
-artist, track, album, duration -- which karaokifex reads for a local file. The picture is composed
+artist, track, album, duration -- and that the video was made from a still (made: still), which
+karaokifex reads for a local file and keeps in the song's info.json, so a player knows the picture
+is slow and calm and may liven it up. The picture is composed
 once and zoomed from there, so a track takes a fraction of its length to make.
 
     karaokifex "<the video>" -a Artist -s Song ...      (or Compute's make_song.py with it)
@@ -102,7 +104,7 @@ def make(url: str, out: Path, *, height: int = HEIGHT, ffmpeg: str = "ffmpeg") -
         subprocess.run(command, check=True)
     sidecar = {"id": source_key(url), "title": f"{artist} - {track}", "artist": artist, "track": track,
                "album": info.get("album"), "uploader": info.get("uploader") or artist, "duration": duration or None,
-               "webpage_url": url}
+               "webpage_url": url, "made": "still"}
     Path(f"{target}.info.json").write_text(json.dumps(sidecar, indent=1, ensure_ascii=False), encoding="utf-8")
     return target
 
