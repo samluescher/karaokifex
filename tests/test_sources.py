@@ -155,3 +155,11 @@ def test_press_photos_name_the_artist_and_are_no_covers():
     assert not photos.NOT_A_PHOTO.search("Disaster-Fantasy.jpg")
     assert photos.ALBUM_ART.search("/img/a4085427402_10.jpg") and not photos.ALBUM_ART.search("/img/0030665963_0.jpg")
     assert photos.near(0b1011, 0b1001) and not photos.near(0, (1 << 20) - 1)
+
+
+def test_a_cameras_photo_is_taken_for_one():
+    from karaokifex.sources import photos
+    for name in ("DSC_8332-2-scaled.jpg", "IMG_1234.jpg", "_MG_0042.jpg", "DSCF1234.JPG", "0Z5A9141_600x600.jpg"):
+        assert photos.CAMERA.match(name), name
+    for name in ("logo.png", "header-bg.jpg", "Disaster-Fantasy.jpg"):
+        assert not photos.CAMERA.match(name), name

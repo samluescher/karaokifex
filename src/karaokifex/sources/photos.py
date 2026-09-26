@@ -5,7 +5,8 @@
 First the artist's own: the band photo on their Bandcamp page. Then a web search (DuckDuckGo's HTML
 search, which allows it) for pages about the artist -- press, their label, their own sites -- keeping
 only those whose title or address names them, and from each page its share picture (og:image) and
-the photos in it that name the artist in their alt text or file name. A site whose robots.txt says
+the photos in it that name the artist in their alt text or file name, or that a camera named (DSC_8332.jpg:
+in an article about the artist, most likely a photo of them). A site whose robots.txt says
 no is left alone; nothing that asks for proof of being a person is answered.
 
 Kept: photos large enough for a 1080p frame (the short side at least MIN_SHORT pixels), not an album
@@ -34,16 +35,19 @@ log = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 SEARCH = "https://html.duckduckgo.com/html/?q={q}"
-QUERIES = ('"{artist}" band', '"{artist}" band press photo', '"{artist}" interview')
+QUERIES = ('"{artist}" band', '"{artist}" band press photo', '"{artist}" interview', '"{artist}" live', '"{artist}" new single')
 # sites whose pages need a login or build themselves in the browser: nothing to read there
 SKIP = ("bandcamp.com", "youtube.", "youtu.be", "spotify.", "music.apple.", "instagram.", "facebook.", "tiktok.",
         "twitter.", "x.com", "soundcloud.", "deezer.", "tidal.", "amazon.", "shazam.")
-MAX_PAGES = 8
+MAX_PAGES = 14
 MAX_CANDIDATES = 24
 MIN_SHORT = 800          # pixels on a photo's short side: a 1080p frame shows it without blowing it up blurry
 MAX_BYTES = 15 * 2**20
 NEAR = 10                # bits apart (of 64) under which two average hashes are one picture
 ALBUM_ART = re.compile(r"(^|/|_)a\d{8,}_\d+")
+# a photo as a camera names it (DSC_8332, IMG_1234, _MG_0042, DSCF1234, P1010001, 0Z5A9141): on a page about the
+# artist, most likely a photo of them, though its name doesn't say so
+CAMERA = re.compile(r"^(dsc[_f]?\d|img[_-]?\d|_mg_\d|dscf\d|p\d{7}|[0-9a-z]{4}\d{4}\b|\d{8}[_-]\d{6})", re.I)
 # what a picture of a record, a product or a gig is called: a cover, artwork, a vinyl shot, merch, a poster...
 NOT_A_PHOTO = re.compile(r"(cover|artwork|art[-_ ]work|vinyl|\blp\b|\bcd\b|merch|product|packshot|tracklist|poster|flyer|logo|banner)", re.I)
 Get = Callable[..., requests.Response]
@@ -109,6 +113,10 @@ def search(artist: str, *, get: Get = requests.get) -> list[tuple[str, str]]:
         except requests.RequestException as error:
             log.info("search failed: %s", error)
             continue
+        # asked to prove it's a person (an "anomaly" page): not answered; no more searching for now
+        if r.status_code == 202 or "anomaly" in r.text[:20000].lower() and "result__a" not in r.text:
+            log.warning("the web search asks for proof of being a person: no more searching now (the photos found so far stay)")
+            break
         for href, title in re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, re.S):
             href = html.unescape(href)
             if "uddg=" in href:
@@ -173,8 +181,11 @@ def candidates(artist: str, pages: list[tuple[str, str]], *, get: Get = requests
         for src, alt in p.images:
             if NOT_A_PHOTO.search(alt):
                 continue
-            if names(artist, alt, Path(urlparse(src).path).name.replace("-", " ").replace("_", " ")):
+            name = unquote(Path(urlparse(src).path).name)
+            if names(artist, alt, name.replace("-", " ").replace("_", " ")):
                 out.append((urljoin(page, src), page, "a photo on the page"))
+            elif CAMERA.match(name):
+                out.append((urljoin(page, src), page, "a camera's photo on a page about them"))
     seen, unique = set(), []
     for c in out:
         name = unquote(Path(urlparse(c[0]).path).name)
