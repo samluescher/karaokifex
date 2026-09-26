@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from functools import partial
@@ -41,7 +42,7 @@ from karaokifex.console import TaskBoard, console, register_tasks
 from karaokifex.gpu import free_gpu_memory
 from karaokifex.metadata import guess_artist_song, name_guesses, title_segments
 from karaokifex.models import Lyrics, TimedWord, VideoInfo
-from karaokifex import level, quality
+from karaokifex import dialects, level, quality
 from karaokifex.palette import dominant_colors, without_bars
 from karaokifex.runner import RunReport, Task, TaskContext, TaskRunner, current_task
 from karaokifex.steps import download, lyrics, media, musicbrainz, separation, transcription
@@ -222,7 +223,7 @@ def run_pipeline(config: Config) -> PipelineResult:
 def _lyrics(job: Job, ctx: TaskContext) -> str:
     """lrclib first, always; lyrics given with the song (--lyrics-file) only when it has none; then whisperx."""
     ctx.note(f"searching “{job.artist} – {job.song}”…")
-    found = lyrics.fetch_lyrics(job.artist, job.song, job.info.duration)
+    found = _only_swiss_german(job, lyrics.fetch_lyrics(job.artist, job.song, job.info.duration))
     if found and job.config.lyrics_file:
         log.info("lrclib has the song: the lyrics given (%s) are not used", job.config.lyrics_file.name)
     if not found and job.config.lyrics_file:
@@ -240,6 +241,47 @@ def _lyrics(job: Job, ctx: TaskContext) -> str:
                  _format_length(candidate.duration))
     others = f" (+{len(found) - 1} alternatives)" if len(found) > 1 else ""
     return lyrics.describe(found[0]) + others
+
+
+def _only_swiss_german(job: Job, found: list[Lyrics]) -> list[Lyrics]:
+    """For a Swiss German song (--language gsw), only lyrics that read as Swiss German: Standard German words
+    for it are no lyrics of it."""
+    if not dialects.swiss(job.config.language):
+        return found
+    keep = [c for c in found if dialects.reads_swiss_german(" ".join(line.text for line in c.lines))]
+    for c in found:
+        if c not in keep:
+            log.info("%s doesn't read as Swiss German: not used for a Swiss German song", lyrics.describe(c))
+    return keep
+
+
+def _swiss_german_lyrics(job: Job, words: list[TimedWord]) -> None:
+    """A Swiss German song with no lyrics: whisper's lines, when they read as Standard German written back in Swiss
+    German by the chat model (--llm-url), kept as lyrics.gsw.txt with where they came from and aligned like any
+    lyrics. Lines that read as Swiss German already are the transcription's own, as for any song without lyrics."""
+    lines = [" ".join(w.text.strip() for w in line.words) for line in lines_from_words(words)]
+    text = " ".join(lines)
+    if not lines or dialects.reads_swiss_german(text):
+        log.info("whisper's lines read as Swiss German: used as they are")
+        return
+    if not job.config.llm_url:
+        log.warning("whisper wrote this Swiss German song in Standard German: --llm-url writes it back in Swiss German, "
+                    "or give its lyrics with --lyrics-file")
+        return
+    ctx_model = job.config.llm_model or "the chat model"
+    rewritten = dialects.rewrite(lines, job.config.llm_url, job.config.llm_model)
+    if not rewritten:
+        log.warning("whisper wrote this Swiss German song in Standard German, and %s gave no Swiss German back: "
+                    "the transcription's lines are used; give its lyrics with --lyrics-file", ctx_model)
+        return
+    path = job.workspace.swiss_lyrics
+    header = [f"# {job.artist} - {job.song}: Swiss German lyrics made from the singing, {time.strftime('%Y-%m-%d')}",
+              f"# whisper heard it in German and wrote Standard German; {ctx_model} wrote each line back in Swiss German",
+              "# (the words as sung, most likely: not a published text; karaokifex --lyrics-file skips # lines)"]
+    path.write_text("\n".join(header + rewritten) + "\n", encoding="utf-8")
+    made = lyrics.from_file(path, job.artist, job.song)
+    lyrics.save_lyrics([made], job.workspace.lyrics_json)
+    log.info("%d lines written back in Swiss German by %s (%s)", len(rewritten), ctx_model, path.name)
 
 
 def _download(job: Job, ctx: TaskContext) -> None:
@@ -357,7 +399,7 @@ def _vocal_activity(job: Job, ctx: TaskContext) -> None:
 
 def _load_whisper(job: Job, ctx: TaskContext) -> object:
     ctx.note("loading model (downloaded on first use)…")
-    return transcription.load_model(job.config.whisper_model, job.device, job.config.language)
+    return transcription.load_model(job.config.whisper_model, job.device, dialects.whisper_language(job.config.language))
 
 
 def _song_language(job: Job, candidates: list[Lyrics]) -> str | None:
@@ -375,16 +417,21 @@ def _whisper_model(job: Job, ctx: TaskContext, *upstream: str) -> Any:
         if (model := ctx.take(task)) is not None:
             return model
     ctx.note("loading model…")  # upstream was cached (an old transcript existed) but we must transcribe again
-    return transcription.load_model(job.config.whisper_model, job.device, job.config.language)
+    return transcription.load_model(job.config.whisper_model, job.device, dialects.whisper_language(job.config.language))
 
 
 def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target: Path) -> None:
     candidates = lyrics.load_lyrics(job.workspace.lyrics_json)
-    prompt = lyrics.prompt_text(candidates[0].lines) if candidates else None
-    words, language = transcription.transcribe(model, audio, job.device, language=_song_language(job, candidates),
+    swiss = dialects.swiss(job.config.language)
+    # a Swiss German song with no lyrics: whisper prompted in Swiss German, which keeps it nearer the dialect
+    prompt = lyrics.prompt_text(candidates[0].lines) if candidates else dialects.PROMPT if swiss else None
+    words, language = transcription.transcribe(model, audio, job.device,
+                                               language=dialects.whisper_language(_song_language(job, candidates)),
                                                prompt=prompt, on_stage=ctx.note)
     transcription.save_transcript(words, language, target)
     log.info("heard %d words in %s (language: %s)", len(words), audio.name, language)
+    if swiss and not candidates and target == job.workspace.transcript_json:
+        _swiss_german_lyrics(job, words)
 
 
 def _transcribe(job: Job, ctx: TaskContext) -> Any:
@@ -480,7 +527,7 @@ def _subtitles(job: Job, ctx: TaskContext) -> str:
     width, height = job.info.width or 1920, job.info.height or 1080
     for path, debug in ((ws.subtitles, False), (ws.debug_subtitles, True)):
         _write_text(path, build_ass(lines, width=width, height=height, title=job.title, debug=debug))
-    _write_json(ws.timings_json, {"lyrics": description, "language": language,
+    _write_json(ws.timings_json, {"lyrics": description, "language": "gsw" if dialects.swiss(job.config.language) else language,
                                   "lines": [[asdict(word) for word in line.words] for line in lines]})
     log.info("wrote %d karaoke lines to %s", len(lines), ws.subtitles.name)
     return description

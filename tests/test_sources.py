@@ -115,7 +115,7 @@ def test_the_pipeline_asks_lrclib_before_a_given_file(tmp_path: Path, monkeypatc
     given = tmp_path / "given.txt"
     given.write_text("given one\ngiven two\n", encoding="utf-8")
     job = SimpleNamespace(artist="A", song="S", info=SimpleNamespace(duration=None),
-                          config=SimpleNamespace(lyrics_file=given), workspace=SimpleNamespace(lyrics_json=tmp_path / "lyrics.json"))
+                          config=SimpleNamespace(lyrics_file=given, language=None), workspace=SimpleNamespace(lyrics_json=tmp_path / "lyrics.json"))
     ctx = SimpleNamespace(note=lambda *_: None)
     hit = lyrics.Lyrics(lrclib_id=7, artist="A", track="S", album=None, duration=None, synced=False,
                         lines=(lyrics.LyricLine(None, "from lrclib"),))

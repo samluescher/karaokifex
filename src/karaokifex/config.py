@@ -17,7 +17,9 @@ class Config:
     url: str
     artist: str | None = None
     song: str | None = None
-    language: str | None = None
+    language: str | None = None  # gsw: Swiss German (dialects.py)
+    llm_url: str | None = None  # an OpenAI-style chat server, for writing a Swiss German transcription back in Swiss German
+    llm_model: str | None = None
     musicbrainz: bool = True  # canonical artist and song names from MusicBrainz
     karaoke_models: tuple[str, ...] = (DEFAULT_KARAOKE_MODEL,)  # several: their lead vocals are averaged
     whisper_model: str = DEFAULT_WHISPER_MODEL

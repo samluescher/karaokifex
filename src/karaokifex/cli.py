@@ -38,7 +38,13 @@ log = logging.getLogger("karaokifex")
               help="Look the song up on MusicBrainz and use its artist and song names when it is sure; "
                    "names given with --artist/--song win.")
 @click.option("-l", "--language",
-              help="Language code, e.g. 'en'. Default: detected from the lyrics, else from the singing.")
+              help="Language code, e.g. 'en'. Default: detected from the lyrics, else from the singing. 'gsw' is Swiss "
+                   "German: only lyrics that read as Swiss German count, whisper is steered toward the dialect, and a "
+                   "transcription in Standard German is written back in Swiss German (with --llm-url).")
+@click.option("--llm-url", default=None,
+              help="An OpenAI-style chat server (e.g. http://127.0.0.1:8090/v1, a local llama.cpp) that writes a Swiss "
+                   "German song's transcription back in Swiss German when whisper wrote Standard German.")
+@click.option("--llm-model", default=None, help="The chat server's model name, e.g. qwen3-8b.")
 @click.option("--karaoke-model", "karaoke_models", multiple=True, default=(DEFAULT_KARAOKE_MODEL,), show_default=True,
               help="audio-separator model splitting lead vocals from the rest (backing vocals included). Give it "
                    "several times to average their lead vocals (an ensemble); each one takes its own run.")
