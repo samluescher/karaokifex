@@ -1,10 +1,12 @@
 """Press photos of an artist, found on the web, for a video made from pictures (karaokifex-bandcamp).
 
-    press_photos(artist, into, bandcamp=host, limit=6) -> [Photo(path, image, page, how), ...]
+    press_photos(artist, into, bandcamp=host, limit=6, cache=dir) -> [Photo(path, image, page, how), ...]
 
-First the artist's own: the band photo on their Bandcamp page. Then a web search (DuckDuckGo's HTML
-search, which allows it) for pages about the artist -- press, their label, their own sites -- keeping
-only those whose title or address names them, and from each page its share picture (og:image) and
+First the artist's own: the band photo on their Bandcamp page, and their picture on Deezer (its open
+API: the artist's own image, 1000x1000). Then pages about them: the official links MusicBrainz knows
+(its open API), and a web search (DuckDuckGo's HTML search, which allows it, a query every two
+seconds) for press, their label, their own sites -- keeping only pages whose title or address names
+them -- and from each page its share picture (og:image) and
 the photos in it that name the artist in their alt text or file name, or that a camera named (DSC_8332.jpg:
 in an article about the artist, most likely a photo of them). A site whose robots.txt says
 no is left alone; nothing that asks for proof of being a person is answered.
@@ -14,14 +16,20 @@ cover (Bandcamp's a<number> images: the video has its cover already) nor a pictu
 text calls it a cover, artwork, a vinyl or product shot, a poster or a logo, and not a near copy of one
 already kept (an 8x8 average hash, the same picture at another size or crop). Each one says where it
 was found (page) and how (the band photo, a page's share picture, a photo on the page).
+
+With a cache folder, the photos found for an artist are kept there with where each came from, and the
+next track by the same artist takes them from it rather than searching again (for CACHE_DAYS).
 """
 from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import re
+import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -40,6 +48,9 @@ QUERIES = ('"{artist}" band', '"{artist}" band press photo', '"{artist}" intervi
 SKIP = ("bandcamp.com", "youtube.", "youtu.be", "spotify.", "music.apple.", "instagram.", "facebook.", "tiktok.",
         "twitter.", "x.com", "soundcloud.", "deezer.", "tidal.", "amazon.", "shazam.")
 MAX_PAGES = 14
+PAUSE = 2.0              # seconds between two web searches
+CACHE_DAYS = 14
+MB_AGENT = "karaokifex/0.1 (https://github.com/samluescher/karaokifex)"
 MAX_CANDIDATES = 24
 MIN_SHORT = 800          # pixels on a photo's short side: a 1080p frame shows it without blowing it up blurry
 MAX_BYTES = 15 * 2**20
@@ -106,7 +117,9 @@ class _Images(HTMLParser):
 def search(artist: str, *, get: Get = requests.get) -> list[tuple[str, str]]:
     """(page, title) for the web's pages about the artist, those that name them, each once."""
     found: dict[str, str] = {}
-    for query in QUERIES:
+    for n, query in enumerate(QUERIES):
+        if n:
+            time.sleep(PAUSE)
         try:
             r = get(SEARCH.format(q=quote_plus(query.format(artist=artist))), headers={"User-Agent": USER_AGENT}, timeout=20)
             r.raise_for_status()
@@ -156,6 +169,39 @@ def band_photo(host: str, *, get: Get = requests.get) -> str | None:
         return None
     m = re.search(r'class="popupImage"[^>]*href="([^"]+)"', r.text) or re.search(r'<img[^>]*src="([^"]+)"[^>]*class="band-photo"', r.text)
     return re.sub(r"_\d+\.(jpg|png)$", r"_0.\1", m.group(1)) if m else None
+
+
+def deezer_photo(artist: str, *, get: Get = requests.get) -> str | None:
+    """The artist's picture on Deezer (its open API), at 1000x1000; none for a name it doesn't have exactly, or
+    for its placeholder (an image with no id)."""
+    try:
+        r = get("https://api.deezer.com/search/artist", params={"q": artist}, timeout=20)
+        r.raise_for_status()
+        hit = next((a for a in r.json().get("data", []) if plain(a.get("name", "")) == plain(artist)), None)
+    except (requests.RequestException, ValueError):
+        return None
+    url = (hit or {}).get("picture_xl") or ""
+    return url if "/artist/" in url and "/artist//" not in url else None
+
+
+def official_pages(artist: str, *, get: Get = requests.get) -> list[tuple[str, str]]:
+    """The artist's official links on MusicBrainz (its open API: an exact name, its best match), as pages to read."""
+    try:
+        r = get("https://musicbrainz.org/ws/2/artist/", params={"query": f'artist:"{artist}"', "fmt": "json", "limit": 3},
+                headers={"User-Agent": MB_AGENT}, timeout=20)
+        r.raise_for_status()
+        hit = next((a for a in r.json().get("artists", []) if plain(a.get("name", "")) == plain(artist) and a.get("score", 0) >= 95), None)
+        if not hit:
+            return []
+        time.sleep(1.1)                       # MusicBrainz asks for a request a second at most
+        r = get(f"https://musicbrainz.org/ws/2/artist/{hit['id']}", params={"inc": "url-rels", "fmt": "json"},
+                headers={"User-Agent": MB_AGENT}, timeout=20)
+        r.raise_for_status()
+    except (requests.RequestException, ValueError):
+        return []
+    urls = [rel.get("url", {}).get("resource", "") for rel in r.json().get("relations", [])
+            if rel.get("type") in ("official homepage", "social network", "image", "fanpage", "biography", "interview")]
+    return [(u, "an official link on MusicBrainz") for u in urls if u.startswith("http") and not any(s in urlparse(u).netloc for s in SKIP)]
 
 
 def candidates(artist: str, pages: list[tuple[str, str]], *, get: Get = requests.get) -> list[tuple[str, str, str]]:
@@ -220,13 +266,18 @@ def near(a: int, b: int) -> bool:
 
 
 def press_photos(artist: str, into: Path, *, bandcamp: str | None = None, cover: Path | None = None, limit: int = 6,
-                 get: Get = requests.get, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") -> list[Photo]:
+                 cache: Path | None = None, get: Get = requests.get, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") -> list[Photo]:
     """The artist's press photos, downloaded into `into` (see the top)."""
     into.mkdir(parents=True, exist_ok=True)
+    if cache and (kept := from_cache(cache, into)) is not None:
+        log.info("%d photos of %s from the cache (%s)", len(kept), artist, cache)
+        return kept[:limit]
     found: list[tuple[str, str, str]] = []
     if bandcamp and (bp := band_photo(bandcamp, get=get)):
         found.append((bp, f"https://{bandcamp}/", "the band photo on their Bandcamp page"))
-    found += candidates(artist, search(artist, get=get), get=get)
+    if dz := deezer_photo(artist, get=get):
+        found.append((dz, "https://www.deezer.com/", "their picture on Deezer"))
+    found += candidates(artist, official_pages(artist, get=get) + search(artist, get=get), get=get)
     kept: list[Photo] = []
     # the cover is in the video already: a copy of it found on a page is no new photo
     hashes = [h for h in [ahash(cover, ffmpeg) if cover else None] if h is not None]
@@ -251,4 +302,31 @@ def press_photos(artist: str, into: Path, *, bandcamp: str | None = None, cover:
         hashes.append(hsh)
         kept.append(Photo(path, image, page, how))
         log.info("photo %s (%dx%d) from %s", image, w, h, page)
+    if cache:
+        to_cache(cache, kept)
     return kept
+
+
+def to_cache(cache: Path, photos: list[Photo]) -> None:
+    """The photos found for an artist, kept with where each came from (photos.json)."""
+    cache.mkdir(parents=True, exist_ok=True)
+    for p in photos:
+        shutil.copy2(p.path, cache / p.path.name)
+    (cache / "photos.json").write_text(json.dumps({"found": time.time(), "photos": [
+        {"file": p.path.name, "image": p.image, "page": p.page, "how": p.how} for p in photos]}, indent=1), encoding="utf-8")
+
+
+def from_cache(cache: Path, into: Path) -> list[Photo] | None:
+    """The photos kept for an artist, copied into `into`; None when there are none, or they are older than CACHE_DAYS."""
+    try:
+        doc = json.loads((cache / "photos.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if time.time() - doc.get("found", 0) > CACHE_DAYS * 86400:
+        return None
+    out = []
+    for p in doc.get("photos", []):
+        if (cache / p["file"]).exists():
+            shutil.copy2(cache / p["file"], into / p["file"])
+            out.append(Photo(into / p["file"], p["image"], p["page"], p["how"]))
+    return out

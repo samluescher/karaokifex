@@ -156,8 +156,10 @@ def make(url: str, out: Path, *, height: int = HEIGHT, ffmpeg: str = "ffmpeg", p
         cover.write_bytes(response.content)
         target = out / f"{safe(f'{artist} - {track}')}.mp4"
         # the artist's press photos, and each picture composed once: the cover first
+        # (kept per artist beside the videos, so the next track of theirs doesn't search again)
         found = press.press_photos(artist, tmp_dir / "photos", bandcamp=urlparse(url).netloc.lower(), cover=cover,
-                                   limit=photos, ffmpeg=ffmpeg, ffprobe=ffprobe_of(ffmpeg)) if photos else []
+                                   limit=photos, cache=out / ".press-photos" / safe(artist), ffmpeg=ffmpeg,
+                                   ffprobe=ffprobe_of(ffmpeg)) if photos else []
         stills = []
         for i, picture in enumerate([cover, *(p.path for p in found)]):
             still = tmp_dir / f"still-{i}.png"

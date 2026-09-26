@@ -163,3 +163,15 @@ def test_a_cameras_photo_is_taken_for_one():
         assert photos.CAMERA.match(name), name
     for name in ("logo.png", "header-bg.jpg", "Disaster-Fantasy.jpg"):
         assert not photos.CAMERA.match(name), name
+
+
+def test_press_photos_are_kept_per_artist(tmp_path: Path):
+    from karaokifex.sources import photos
+    pic = tmp_path / "found" / "photo-1.jpg"
+    pic.parent.mkdir()
+    pic.write_bytes(b"jpeg")
+    photos.to_cache(tmp_path / "cache", [photos.Photo(pic, "https://x/1.jpg", "https://x/", "a photo on the page")])
+    (tmp_path / "into").mkdir()
+    back = photos.from_cache(tmp_path / "cache", tmp_path / "into")
+    assert back and back[0].image == "https://x/1.jpg" and back[0].path.read_bytes() == b"jpeg"
+    assert photos.from_cache(tmp_path / "none", tmp_path / "into") is None
