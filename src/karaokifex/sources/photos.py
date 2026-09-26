@@ -58,7 +58,7 @@ NEAR = 10                # bits apart (of 64) under which two average hashes are
 ALBUM_ART = re.compile(r"(^|/|_)a\d{8,}_\d+")
 # a photo as a camera names it (DSC_8332, IMG_1234, _MG_0042, DSCF1234, P1010001, 0Z5A9141): on a page about the
 # artist, most likely a photo of them, though its name doesn't say so
-CAMERA = re.compile(r"^(dsc[_f]?\d|img[_-]?\d|_mg_\d|dscf\d|p\d{7}|[0-9a-z]{4}\d{4}\b|\d{8}[_-]\d{6})", re.I)
+CAMERA = re.compile(r"^(dsc[_f]?\d|img[_-]?\d|_mg_\d|dscf\d|p\d{7}|[0-9a-z]{4}\d{4}(?![0-9a-z])|\d{8}[_-]\d{6})", re.I)
 # what a picture of a record, a product or a gig is called: a cover, artwork, a vinyl shot, merch, a poster...
 NOT_A_PHOTO = re.compile(r"(cover|artwork|art[-_ ]work|vinyl|\blp\b|\bcd\b|merch|product|packshot|tracklist|poster|flyer|logo|banner)", re.I)
 Get = Callable[..., requests.Response]
