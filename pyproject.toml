@@ -31,6 +31,8 @@ karaokifex-eval = "karaokifex.evaluate:main"
 karaokifex-describe = "karaokifex.describe:main"
 karaokifex-quality = "karaokifex.quality:main"
 karaokifex-lift = "karaokifex.level:main"
+karaokifex-lyrics-web = "karaokifex.sources.lyrics_web:main"
+karaokifex-bandcamp = "karaokifex.sources.bandcamp:main"
 
 [dependency-groups]
 dev = ["pytest>=8.3"]

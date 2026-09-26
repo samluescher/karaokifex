@@ -109,7 +109,7 @@ def prepare(config: Config) -> Job:
     token = current_task.set("probe")
     try:
         log.info("looking up %s", config.url)
-        info = download.probe(config.url)
+        info = download.probe(config.url, ffprobe=media.FfmpegBinary(config.ffmpeg or "ffmpeg").ffprobe)
         artist, song = guess_artist_song(info, config.artist, config.song)
         if config.musicbrainz and not (config.artist and config.song):
             artist, song = canonical_names(info, config.artist, config.song, (artist, song))
@@ -220,6 +220,11 @@ def run_pipeline(config: Config) -> PipelineResult:
 
 
 def _lyrics(job: Job, ctx: TaskContext) -> str:
+    if job.config.lyrics_file:
+        given = lyrics.from_file(job.config.lyrics_file, job.artist, job.song)
+        lyrics.save_lyrics([given] if given.lines else [], job.workspace.lyrics_json)
+        log.info("lyrics given: %s, %d lines", job.config.lyrics_file.name, len(given.lines))
+        return lyrics.describe(given)
     ctx.note(f"searching “{job.artist} – {job.song}”…")
     found = lyrics.fetch_lyrics(job.artist, job.song, job.info.duration)
     lyrics.save_lyrics(found, job.workspace.lyrics_json)
@@ -238,7 +243,8 @@ def _download(job: Job, ctx: TaskContext) -> None:
         ctx.progress(fraction)
         ctx.note(note)
 
-    download.download(job.config.url, job.workspace.source, on_progress, prefer_h264=job.config.browser_friendly)
+    download.download(job.config.url, job.workspace.source, on_progress, prefer_h264=job.config.browser_friendly,
+                      ffmpeg_path=job.ffmpeg.path)
     log.info("downloaded %s (%.0f MiB)", job.workspace.source.name, job.workspace.source.stat().st_size / 1_048_576)
 
 

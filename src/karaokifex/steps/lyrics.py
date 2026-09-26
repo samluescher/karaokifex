@@ -1,4 +1,4 @@
-"""Lyrics lookup on lrclib.net and LRC parsing."""
+"""Lyrics lookup on lrclib.net and LRC parsing -- or lyrics given with the song (--lyrics-file)."""
 
 from __future__ import annotations
 
@@ -163,9 +163,23 @@ def fetch_lyrics(artist: str, song: str, duration: float | None, *, get: HttpGet
     return [lyrics for c in ranked[:limit] if (lyrics := _to_lyrics(c, artist, song)).lines]
 
 
+def from_file(path: Path, artist: str, song: str) -> Lyrics:
+    """Lyrics given with the song (--lyrics-file): LRC if it has timestamps, else plain text a line a line.
+
+    Where they come from is the caller's business: typed out by hand, in a dialect's own spelling, or
+    found on the web by karaokifex-lyrics-web. They align like lrclib's.
+    """
+    text = path.read_text(encoding="utf-8-sig")
+    lines = parse_lrc(text) if _TIMESTAMP.search(text) else []
+    synced = bool(lines)
+    return Lyrics(lrclib_id=None, artist=artist, track=song, album=None, duration=None, synced=synced,
+                  lines=tuple(lines or parse_plain(text)))
+
+
 def describe(lyrics: Lyrics) -> str:
     kind = "synced" if lyrics.synced else "plain"
-    return f"lrclib #{lyrics.lrclib_id}: {lyrics.artist} – {lyrics.track} ({kind})"
+    where = f"lrclib #{lyrics.lrclib_id}" if lyrics.lrclib_id is not None else "given"
+    return f"{where}: {lyrics.artist} – {lyrics.track} ({kind})"
 
 
 def save_lyrics(candidates: Sequence[Lyrics], path: Path) -> None:

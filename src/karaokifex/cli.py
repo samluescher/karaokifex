@@ -109,6 +109,9 @@ log = logging.getLogger("karaokifex")
                    "deleted after a successful run.")
 @click.option("--autodelete", is_flag=True, hidden=True, expose_value=False,
               help="No effect: temporary files are now deleted by default.")
+@click.option("--lyrics-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
+              help="Lyrics given with the song, used instead of lrclib: plain text a line a line, or LRC. For a song "
+                   "lrclib hasn't got, or a dialect's own spelling (karaokifex-lyrics-web finds some on the web).")
 @click.option("--force", is_flag=True, help="Redo every step, even if its output already exists.")
 @click.option("-v", "--verbose", is_flag=True, help="Show debug output, including the libraries' logs.")
 @click.version_option(__version__, "-V", "--version")
