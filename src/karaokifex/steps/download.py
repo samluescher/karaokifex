@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -136,6 +137,8 @@ def download(url: str, target: Path, on_progress: ProgressCallback, *, prefer_h2
         if status["status"] == "started":
             on_progress(None, f"post-processing ({status.get('postprocessor', 'ffmpeg')})…")
 
+    # at most this many bytes a second, else KARAOKIFEX_RATELIMIT's: a batch run gently, where the home upload is small
+    ratelimit = ratelimit or int(os.environ.get("KARAOKIFEX_RATELIMIT") or 0) or None
     options = _options(
         outtmpl=str(target.with_suffix("")) + ".%(ext)s",
         merge_output_format="mkv",
