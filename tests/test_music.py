@@ -80,3 +80,15 @@ def test_the_melody_moves_as_little_as_it_can():
     assert sum(abs(a - b) for a, b in zip(frets, frets[1:])) <= 8
     assert {p[0] for p in places} <= {1, 2}
     assert tab.octave_shift([76, 79, 84, 88, 91]) in (0, -1)    # a high voice comes down onto the neck if needed
+
+
+@pytest.mark.parametrize("name,expected", [("C", "x32010"), ("G", "210003"), ("D", "xx0132"), ("Am", "x02310"),
+                                           ("E", "023100"), ("F", "134211")])
+def test_the_common_chords_take_their_usual_fingers(name, expected):
+    assert tab.written(tab.fingers(tab.shape(name))) == expected
+
+
+def test_the_hand_moves_only_when_a_note_is_out_of_reach():
+    # frets 5 6 7 8 in one place, then 10 moves the hand up, then an open string
+    places = [(1, 5), (1, 6), (1, 7), (1, 8), (1, 10), (2, 0)]
+    assert tab.hand(places) == [1, 2, 3, 4, 4, 0]

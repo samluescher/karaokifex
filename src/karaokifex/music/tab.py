@@ -7,19 +7,25 @@ octave or two up or down as a whole where the voice sits out of the guitar's rea
 fret that keeps the hand's moves smallest over the whole tune (a shortest path through every place each note can
 be played, frets 0-15, higher frets costing a little more).
 
-tab.json:
+Which finger where: a chord's fingers by its frets, lowest first and low string first -- the standard C, G, D,
+Am, E -- with the index laid across as a barre where the shape needs one (its lowest fret on two strings or
+more, and more than four notes to hold); the melody's by where the hand sits, the index at the fret its
+position starts on, the hand moving only when a note is out of its four frets.
+
+tab.json (version 2):
   version, source ("own"), tuning (["E2", "A2", "D3", "G3", "B3", "E4"], low to high)
   shift     octaves the melody was moved by to sit on the guitar (0, -1, 1 ...)
-  chords    [[start s, length s, name, shape], ...]; shape: a fret a string, low E to high e ("x" muted),
-            "x02210" for Am; frets past 9 as "(10)"
-  notes     [[start s, length s, string (1 high e .. 6 low E), fret], ...]
+  chords    [[start s, length s, name, shape, fingers], ...]; shape: a fret a string, low E to high e ("x"
+            muted), "x02210" for Am, frets past 9 as "(10)"; fingers the same way, "x02310" (0 open, 1 the index
+            .. 4 the little finger), a barre the one finger on several strings
+  notes     [[start s, length s, string (1 high e .. 6 low E), fret, finger], ...]
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-VERSION = 1
+VERSION = 2
 TUNING = [40, 45, 50, 55, 59, 64]           # MIDI, low E to high e
 TUNING_NAMES = ["E2", "A2", "D3", "G3", "B3", "E4"]
 TOP_FRET = 15
@@ -79,6 +85,48 @@ def shape(name: str) -> list[int] | None:
         fret = (root - 9) % 12 or 12
         options.append((fret, [f if f == X else f + fret for f in A_SHAPE[kind]]))
     return min(options)[1] if options else None
+
+
+def fingers(frets: list[int]) -> list[int]:
+    """A finger for each string of a chord shape, low E to high e: -1 muted, 0 open, 1 (the index) to 4."""
+    held = sorted(((f, s) for s, f in enumerate(frets) if f > 0))
+    out = [X if f == X else 0 for f in frets]
+    if not held:
+        return out
+    low = held[0][0]
+    on_low = [s for f, s in held if f == low]
+    barre = len(on_low) >= 2 and len(held) > 4
+    finger = 1
+    if barre:
+        for s in on_low:
+            out[s] = 1
+        held = [(f, s) for f, s in held if f != low]
+        finger = 2
+    for f, s in held:
+        out[s] = min(4, finger)
+        finger += 1
+    return out
+
+
+def hand(places: list[tuple[int, int] | None]) -> list[int | None]:
+    """A finger for each melody note (0 an open string), from where the hand sits: the index at its position's
+    first fret, moving only when a note is out of its four frets."""
+    out: list[int | None] = []
+    position = None
+    for place in places:
+        if not place:
+            out.append(None)
+            continue
+        fret = place[1]
+        if fret == 0:
+            out.append(0)
+            continue
+        if position is None or fret < position:
+            position = fret
+        elif fret > position + 3:
+            position = fret - 3
+        out.append(fret - position + 1)
+    return out
 
 
 def written(frets: list[int]) -> str:
@@ -147,12 +195,13 @@ def make(chords: dict | None, melody: dict | None) -> dict:
     for start, length, name, *_ in (chords or {}).get("chords", []):
         frets = shape(name)
         if frets:
-            out["chords"].append([start, length, name, written(frets)])
+            out["chords"].append([start, length, name, written(frets), written(fingers(frets))])
     notes = (melody or {}).get("notes", [])
     if notes:
         shift = octave_shift([n[2] for n in notes])
         out["shift"] = shift
-        for (start, length, pitch, *_), place in zip(notes, finger([n[2] + 12 * shift for n in notes])):
+        places = finger([n[2] + 12 * shift for n in notes])
+        for (start, length, pitch, *_), place, digit in zip(notes, places, hand(places)):
             if place:
-                out["notes"].append([start, length, place[0], place[1]])
+                out["notes"].append([start, length, place[0], place[1], digit])
     return out
