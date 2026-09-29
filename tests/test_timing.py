@@ -2,12 +2,13 @@ import numpy as np
 import pytest
 
 from karaokifex.activity import HOP, Activity
-from karaokifex.models import LyricLine, TimedWord
+from karaokifex.models import LyricLine, TimedLine, TimedWord
 from karaokifex.timing import (
     PHONETIC,
     AlignmentPlan,
     _similarity,
     align_lyrics,
+    fill_unlyricked,
     filter_heard,
     forced_requests,
     lines_from_words,
@@ -261,3 +262,33 @@ def test_lines_from_words_splits_on_pauses_sentences_and_length():
     assert [line.text for line in lines_from_words(words)] == ["Hello there friend.", "How are", "you"]
     many = heard(*[(f"w{i}", i * 0.3, i * 0.3 + 0.2) for i in range(10)])
     assert [len(line.words) for line in lines_from_words(many, max_words=8)] == [8, 2]
+
+
+def lines_at(*spans: tuple[str, float, float]) -> list[TimedLine]:
+    return [TimedLine((TimedWord(text, start, end, 1.0, "forced"),)) for text, start, end in spans]
+
+
+def rap(start: float, count: int, step: float = 0.5) -> list[TimedWord]:
+    return [TimedWord(f"rap{k}", start + k * step, start + k * step + 0.4, 0.9) for k in range(count)]
+
+
+def test_a_sung_stretch_without_lyrics_is_filled_from_what_was_heard():
+    lines = lines_at(("verse", 1.0, 3.0), ("chorus", 12.0, 14.0))
+    filled = fill_unlyricked(lines, rap(4.0, 12), voice(20.0, (1.0, 3.0), (4.0, 10.0), (12.0, 14.0)))
+    heard_words = [w for line in filled for w in line.words if w.source == "heard"]
+    assert len(heard_words) == 12 and heard_words[0].start == 4.0
+    assert [line.start for line in filled] == sorted(line.start for line in filled)
+    assert filled[0].words[0].text == "verse" and filled[-1].words[0].text == "chorus"
+
+
+def test_no_fill_in_short_gaps_silence_or_for_a_few_words():
+    lines = lines_at(("verse", 1.0, 3.0), ("chorus", 5.0, 7.0))
+    assert fill_unlyricked(lines, rap(3.4, 6, 0.2), voice(10.0, (1.0, 7.0))) == lines  # the gap is too short
+    lines = lines_at(("verse", 1.0, 3.0), ("chorus", 20.0, 22.0))
+    assert fill_unlyricked(lines, rap(5.0, 4), voice(25.0, (1.0, 22.0))) == lines  # too few words
+    assert fill_unlyricked(lines, rap(5.0, 12), voice(25.0, (1.0, 3.0), (20.0, 22.0))) == lines  # heard in silence
+
+
+def test_words_heard_inside_a_lyric_line_are_not_added_again():
+    lines = lines_at(("long line", 2.0, 12.0))
+    assert fill_unlyricked(lines, rap(3.0, 12), voice(15.0, (2.0, 12.0))) == lines

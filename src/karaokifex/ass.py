@@ -50,6 +50,7 @@ SOURCE_COLOURS = {
     "whisper": "&HE0E000&",  # cyan
     "lrc-line": "&H0090FF&",  # orange
     "interpolated": "&H3030FF&",  # red
+    "heard": "&H00E0FF&",  # yellow: sung where the lyrics have nothing (timing.fill_unlyricked)
 }
 LOW_SCORE = 0.3
 

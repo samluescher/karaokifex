@@ -50,6 +50,7 @@ from karaokifex.timing import (
     Alignment,
     AlignmentPlan,
     align_lyrics,
+    fill_unlyricked,
     filter_heard,
     forced_requests,
     kept_lines,
@@ -512,7 +513,10 @@ def _subtitles(job: Job, ctx: TaskContext) -> str:
                      alignment.quality, alignment.match_ratio * 100,
                      "–" if alignment.forced_score is None else f"{alignment.forced_score:.2f}", alignment.cut)
         chosen, alignment = ranked[0]
-        lines = alignment.lines
+        # what's sung where the lyrics have nothing (a rap they left out), from what was heard there
+        lines = fill_unlyricked(alignment.lines, words, activity)
+        if len(lines) > len(alignment.lines):
+            log.info("%d lines added from the transcription where the lyrics have none", len(lines) - len(alignment.lines))
         sources = Counter(word.source for line in lines for word in line.words)
         log.info("word timing sources: %s", ", ".join(f"{name} {count}" for name, count in sources.most_common()))
         if alignment.quality < LOW_MATCH_WARNING:

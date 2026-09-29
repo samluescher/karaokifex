@@ -58,6 +58,10 @@ ONSET_SNAP = 0.3  # seconds a line's first word may move to a phrase onset
 MAX_HOLD = 4.0  # seconds a line's last word may be stretched to the end of a held note
 VOICED_PACK_MIN = 0.5  # interpolate into voiced time only if there is at least this share of the natural duration
 VOTE_AGREE = 0.3  # seconds within which the lead-stem and full-mix transcriptions agree
+# fill_unlyricked: a gap between timed lines at least this long (s), kept this far from its lines (s),
+# holding at least this many heard words, with at least this share of it voiced, is sung without lyrics
+FILL_MIN, FILL_PAD, FILL_WORDS, FILL_VOICED = 4.0, 0.3, 6, 0.4
+FILL_SCORE = 0.3  # heard words scored below this aren't shown
 
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'"})
 # Spellings that differ between lyric sites and whisper; compared with apostrophes and spaces removed.
@@ -513,6 +517,34 @@ def align_lyrics(lines: Sequence[LyricLine], heard: Sequence[TimedWord], *, plan
     shown = [score for k, score in forced_scores.items() if all_tokens[k].line not in plan.cut]
     return Alignment(timed_lines, matched, len(all_tokens), forced=sum(source == "forced" for source in sources),
                      forced_score=statistics.fmean(shown) if shown else None, cut=len(plan.cut))
+
+
+def fill_unlyricked(lines: Sequence[TimedLine], heard: Sequence[TimedWord], activity: Activity | None = None
+                    ) -> list[TimedLine]:
+    """Add what's sung where the lyrics have nothing: a rap or a verse the lyric site left out.
+
+    In each gap between the timed lines (and before the first, after the last) at least FILL_MIN long, the
+    words heard there (not in silence, scored at least FILL_SCORE) become lines of their own, labelled
+    `heard`, if there are at least FILL_WORDS of them and (with activity) the lead sings through at least
+    FILL_VOICED of the gap. The timed lines themselves are kept as they are.
+    """
+    lines = sorted(lines, key=lambda line: line.start)
+    words = [w for w in filter_heard(heard, activity) if w.score is None or w.score >= FILL_SCORE]
+    bounds = [-math.inf] + [edge for line in lines for edge in (line.start, line.end)] + [math.inf]
+    added: list[TimedLine] = []
+    for k in range(0, len(bounds), 2):
+        start, end = bounds[k] + FILL_PAD, bounds[k + 1] - FILL_PAD
+        if end - start < FILL_MIN:
+            continue
+        inside = [w for w in words if w.start >= start and w.end <= end]
+        if len(inside) < FILL_WORDS:
+            continue
+        # sung through: the stretch from the first heard word to the last mostly voiced
+        if activity is not None and activity.voiced_fraction(inside[0].start, inside[-1].end) < FILL_VOICED:
+            continue
+        added += [TimedLine(tuple(TimedWord(w.text, w.start, w.end, w.score, "heard") for w in line.words))
+                  for line in lines_from_words(inside)]
+    return sorted([*lines, *added], key=lambda line: line.start)
 
 
 def lines_from_words(words: Sequence[TimedWord], *, max_words: int = 8, max_pause: float = 0.8) -> list[TimedLine]:
