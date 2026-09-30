@@ -272,10 +272,11 @@ def confirmed(recordings: Sequence[dict[str, Any]], artist: str, song: str) -> l
 
 
 def one_artist(recordings: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The recordings of one artist only, where two of the same name have the song: the one with the most
-    recordings of it (then the most releases), which is the one the song is known by. Nirvana's Lithium
-    was described as the British 1960s Nirvana's, from their cover of it: album, year and label all
-    theirs."""
+    """The recordings of one artist only, where two of the same name have the song: the one whose
+    recording of it came out first -- the original, before any cover or re-recording -- then the one
+    with the most recordings of it. Nirvana's Lithium was described as the British 1960s Nirvana's,
+    from their cover of it, album, year and label all theirs; Nena the singer re-recorded the band
+    Nena's 99 Luftballons many times, so the most recordings alone would have taken the band's away."""
     by: dict[str, list[dict[str, Any]]] = {}
     for recording in recordings:
         credits = recording.get("artist-credit") or []
@@ -283,7 +284,9 @@ def one_artist(recordings: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         by.setdefault(first, []).append(recording)
     if len(by) < 2:
         return list(recordings)
-    return max(by.values(), key=lambda rs: (len(rs), sum(len(r.get("releases") or []) for r in rs)))
+    def first(rs: list[dict[str, Any]]) -> str:
+        return min(((r.get("first-release-date") or "9999") for r in rs), default="9999")
+    return min(by.values(), key=lambda rs: (first(rs), -len(rs)))
 
 
 def first_album(recordings: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
