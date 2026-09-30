@@ -233,3 +233,15 @@ def test_describe_asks_for_the_recording_its_work_album_and_artist():
                        'recording:"live and let die" AND artist:(paul mccartney wings)',
                        '(recording:"total eclipse of the heart turn around" AND artist:"bonnie tyler")',
                        'recording:"total eclipse of the heart" AND artist:(bonnie tyler)']
+
+
+def test_of_two_artists_of_one_name_the_one_with_the_song_most():
+    other = {"id": "other-band", "name": "Band"}
+    cover = song("cover", "1996", release("Orange and Blue", "1996", by=other))
+    cover["artist-credit"] = [{"name": "Band", "joinphrase": "", "artist": other}]
+    found = [cover, song("single", "1992", release("Song", "1992", primary="Single")),
+             song("studio", "1991", release("First Album", "1991-09-24")), song("live", "1993", release("Live", "1993", secondary=["Live"]))]
+    kept = musicbrainz.one_artist(found)
+    assert [r["id"] for r in kept] == ["single", "studio", "live"]
+    assert musicbrainz.first_album(kept)[1]["title"] == "First Album"
+    assert musicbrainz.one_artist([cover]) == [cover]
