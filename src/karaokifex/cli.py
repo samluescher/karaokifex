@@ -38,7 +38,13 @@ log = logging.getLogger("karaokifex")
               help="Look the song up on MusicBrainz and use its artist and song names when it is sure; "
                    "names given with --artist/--song win.")
 @click.option("-l", "--language",
-              help="Language code, e.g. 'en'. Default: detected from the lyrics, else from the singing.")
+              help="Language code, e.g. 'en'. Default: detected from the lyrics, else from the singing. 'gsw' is Swiss "
+                   "German: only lyrics that read as Swiss German count, whisper is steered toward the dialect, and a "
+                   "transcription in Standard German is written back in Swiss German (with --llm-url).")
+@click.option("--llm-url", default=None,
+              help="An OpenAI-style chat server (e.g. http://127.0.0.1:8090/v1, a local llama.cpp) that writes a Swiss "
+                   "German song's transcription back in Swiss German when whisper wrote Standard German.")
+@click.option("--llm-model", default=None, help="The chat server's model name, e.g. qwen3-8b.")
 @click.option("--karaoke-model", "karaoke_models", multiple=True, default=(DEFAULT_KARAOKE_MODEL,), show_default=True,
               help="audio-separator model splitting lead vocals from the rest (backing vocals included). Give it "
                    "several times to average their lead vocals (an ensemble); each one takes its own run.")
@@ -112,6 +118,9 @@ log = logging.getLogger("karaokifex")
                    "deleted after a successful run.")
 @click.option("--autodelete", is_flag=True, hidden=True, expose_value=False,
               help="No effect: temporary files are now deleted by default.")
+@click.option("--lyrics-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
+              help="Lyrics given with the song, for when lrclib (always asked first) has none: plain text a line a "
+                   "line, or LRC, in any encoding; # lines are notes. karaokifex-lyrics-web finds some on the web.")
 @click.option("--force", is_flag=True, help="Redo every step, even if its output already exists.")
 @click.option("-v", "--verbose", is_flag=True, help="Show debug output, including the libraries' logs.")
 @click.version_option(__version__, "-V", "--version")

@@ -241,6 +241,7 @@ def describe(artist: str, song: str, *, get: HttpGet = requests.get, timeout: fl
         found = confirmed(search(loose, get=get, timeout=timeout), artist, song)
     if not found:
         return None
+    found = one_artist(found)
     album = first_album(found)
     recording = album[0] if album else max(found, key=lambda r: len(r.get("releases") or []))
     ask = partial(entity, get=get, timeout=timeout)
@@ -268,6 +269,24 @@ def confirmed(recordings: Sequence[dict[str, Any]], artist: str, song: str) -> l
         if names and _same_artist(artist, names[2], names[3]) and _same_song(song, names[1]):
             out.append(recording)
     return out
+
+
+def one_artist(recordings: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The recordings of one artist only, where two of the same name have the song: the one whose
+    recording of it came out first -- the original, before any cover or re-recording -- then the one
+    with the most recordings of it. Nirvana's Lithium was described as the British 1960s Nirvana's,
+    from their cover of it, album, year and label all theirs; Nena the singer re-recorded the band
+    Nena's 99 Luftballons many times, so the most recordings alone would have taken the band's away."""
+    by: dict[str, list[dict[str, Any]]] = {}
+    for recording in recordings:
+        credits = recording.get("artist-credit") or []
+        first = (credits[0].get("artist") or {}).get("id", "") if credits else ""
+        by.setdefault(first, []).append(recording)
+    if len(by) < 2:
+        return list(recordings)
+    def first(rs: list[dict[str, Any]]) -> str:
+        return min(((r.get("first-release-date") or "9999") for r in rs), default="9999")
+    return min(by.values(), key=lambda rs: (first(rs), -len(rs)))
 
 
 def first_album(recordings: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:

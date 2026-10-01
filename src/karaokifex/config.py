@@ -17,7 +17,9 @@ class Config:
     url: str
     artist: str | None = None
     song: str | None = None
-    language: str | None = None
+    language: str | None = None  # gsw: Swiss German (dialects.py)
+    llm_url: str | None = None  # an OpenAI-style chat server, for writing a Swiss German transcription back in Swiss German
+    llm_model: str | None = None
     musicbrainz: bool = True  # canonical artist and song names from MusicBrainz
     karaoke_models: tuple[str, ...] = (DEFAULT_KARAOKE_MODEL,)  # several: their lead vocals are averaged
     whisper_model: str = DEFAULT_WHISPER_MODEL
@@ -47,6 +49,7 @@ class Config:
     keep_source: bool = False  # also render the original video with its own sound, like the karaoke video
     keep_download: bool = False  # keep the download as it came (source.mkv): the best there is, never re-encoded
     force: bool = False
+    lyrics_file: Path | None = None  # lyrics given with the song, used instead of lrclib: plain text or LRC
     verbose: bool = False
 
     @property
