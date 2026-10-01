@@ -1,0 +1,14 @@
+# Copy to tab-sources.toml (git-ignored) and set the sources you trust: karaokifex-tabs asks them in order for
+# each song and keeps the first answer that has chords or a tab. These addresses are made up.
+
+[[source]]
+name = "example-chords"
+url = "https://tabs.example.com/{artist_slug}/{song_slug}.txt"
+kind = "chords-over-lyrics"        # or "chordpro", or "ascii-tab"
+instrument = "guitar"
+# headers = { "User-Agent" = "karaokifex (you@example.com)" }
+
+[[source]]
+name = "example-pro"
+url = "https://sheets.example.com/songs/{artist_q}/{song_q}.pro"
+kind = "chordpro"

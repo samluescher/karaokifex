@@ -157,7 +157,8 @@ class Workspace:
         videos = (self.final_video, self.debug_video, self.plain_video, self.original_video)
         earlier_renders = [path for video in videos for path in self.root.glob(f"{glob.escape(video.stem)}.*")]
         keep = {self.final_video, self.subtitles, self.karaoke_backing, self.lyrics_json, self.timings_json,
-                self.info_json, self.metadata_json, self.song_json, self.quality_json}
+                self.info_json, self.metadata_json, self.song_json, self.quality_json,
+                self.root / "tab-source.json", self.root / "tab-check.json"}
         return frozenset(keep | {p for p in earlier_renders if ".partial." not in p.name})
 
     def temp_files(self, keep_too: Iterable[Path] = ()) -> list[Path]:
