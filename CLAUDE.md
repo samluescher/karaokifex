@@ -68,6 +68,10 @@ fake `whisperx` module). The pure logic, where the tests concentrate, lives in:
   album of the artist's own gives the album, its recording the genres (weighed with the album's and the
   artist's) and the work, whose relations give the writers and whose language the song's. Written to
   `song.json` by the `describe` step (`--describe`) and by `karaokifex-describe` (`describe.py`).
+- `tabs.py`: `karaokifex-tabs <song folder>...` asks the sources in the local `tab-sources.toml` (git-ignored; the repo has only
+  `tab-sources.example.toml` with made-up addresses) for a song's chords or tab, writes the first answer to `tab-source.json`
+  and, against our own `chords.json`, `tab-check.json` (agree / wrong / missing). A downloaded tab is the source of truth. It
+  knows no site: each source says its address template and how its answer is read (chords over lyrics, ChordPro, ASCII tab).
 - `quality.py`: `summary` reads a file's streams with ffprobe; the `quality` step (`--quality`) reads the
   download before cleanup deletes it, and `karaokifex-quality` makes do with `info.json` and the original.
 
