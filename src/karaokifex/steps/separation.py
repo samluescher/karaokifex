@@ -26,6 +26,10 @@ log = logging.getLogger(__name__)
 _MDXC_PARAMS = {"segment_size": 256, "override_model_segment_size": False, "batch_size": None, "pitch_shift": 0}
 
 
+def _no_onnx_cuda_warning(record: logging.LogRecord) -> bool:
+    return "CUDAExecutionProvider not available" not in record.getMessage()
+
+
 def separate(audio: Path, *, model: str, stems: dict[str, Path], model_dir: Path, overlap: int, fp16: bool = True,
              verbose: bool = False, on_stage: Callable[[str], None] = lambda _: None) -> None:
     """Run `model` on `audio` and write the requested stems, e.g. {"vocals": Path(".../vocals.wav")}.
@@ -42,6 +46,9 @@ def separate(audio: Path, *, model: str, stems: dict[str, Path], model_dir: Path
     # Written under a temporary name and renamed on success, so an aborted run never looks finished.
     temporary = {stem: path.with_name(f"{path.stem}_partial{path.suffix}") for stem, path in stems.items()}
 
+    # The Roformers (.ckpt) run on CUDA through PyTorch; audio-separator still warns that ONNX Runtime has no CUDA,
+    # which only its .onnx models would need (no [gpu] extra: pyproject.toml), and reads like a GPU fault in the logs.
+    logging.getLogger("audio_separator.separator.separator").addFilter(_no_onnx_cuda_warning)
     separator = Separator(
         log_level=logging.INFO if verbose else logging.WARNING,
         model_file_dir=str(model_dir),
