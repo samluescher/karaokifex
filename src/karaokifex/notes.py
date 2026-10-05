@@ -180,8 +180,14 @@ def load_sources(path: Path) -> list[Source]:
             raise ValueError(f"{path}: source {entry.get('name')!r}: kind must be one of {', '.join(KINDS)}")
         if bool(entry.get("url")) == bool(entry.get("path")):
             raise ValueError(f"{path}: source {entry.get('name')!r}: it needs a url or a path, and not both")
-        out.append(Source(name=entry["name"], kind=kind, url=entry.get("url"), path=entry.get("path"),
-                          headers=dict(entry.get("headers", {}))))
+        source = Source(name=entry["name"], kind=kind, url=entry.get("url"), path=entry.get("path"),
+                        headers=dict(entry.get("headers", {})))
+        try:
+            source.address("A", "B") if source.url else source.pattern("A", "B")
+        except (KeyError, IndexError, ValueError) as e:
+            raise ValueError(f"{path}: source {source.name!r}: its address has {e!r}, which is not a name it knows "
+                             "({artist} {song} {artist_q} {song_q} {artist_slug} {song_slug})") from e
+        out.append(source)
     return out
 
 

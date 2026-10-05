@@ -244,7 +244,7 @@ def test_the_melody_of_a_midi_is_the_line_that_is_one_note_at_a_time_and_not_the
 def test_a_perturbed_midi_of_the_song_is_accepted_with_its_transposition_and_a_small_onset_error(tmp_path, name, kw, transpose):
     song = tune()
     ours = notes.ours_of(folder_of(tmp_path, song))
-    answer = notes.Answer("lakh", "midi", "x.mid", smf([line_track(perturbed(song, **kw))]))
+    answer = notes.Answer("midi-lib", "midi", "x.mid", smf([line_track(perturbed(song, **kw))]))
     doc = notes.check_answer(answer, ours)
     assert doc["accepted"], doc.get("reason")
     assert doc["transpose"] == transpose
@@ -269,7 +269,7 @@ def test_how_much_of_the_file_lies_in_the_sung_words_is_said_where_the_song_has_
     folder = folder_of(tmp_path, song)
     ours = notes.ours_of(folder)
     assert ours.windows is None
-    answer = notes.Answer("lakh", "midi", "x.mid", smf([line_track(perturbed(song, shift=1.0))]))
+    answer = notes.Answer("midi-lib", "midi", "x.mid", smf([line_track(perturbed(song, shift=1.0))]))
     assert notes.check_answer(answer, ours)["in_words"] is None
     words = [{"start": s, "end": s + l, "text": "la"} for s, l, _ in song if s < 40]       # words for the first notes only
     (folder / "timings.json").write_text(json.dumps({"lines": [words]}))
@@ -281,7 +281,7 @@ def test_how_much_of_the_file_lies_in_the_sung_words_is_said_where_the_song_has_
 
 def test_the_melody_of_another_song_is_not_accepted(tmp_path):
     ours = notes.ours_of(folder_of(tmp_path, tune(seed=7)))
-    answer = notes.Answer("lakh", "midi", "x.mid", smf([line_track(tune(seed=21, phrases=12))]))
+    answer = notes.Answer("midi-lib", "midi", "x.mid", smf([line_track(tune(seed=21, phrases=12))]))
     doc = notes.check_answer(answer, ours)
     assert not doc["accepted"] and doc["agree_known"] < 0.45 and not doc["same_song"]
     assert "semitone" in doc["reason"] and doc["notes_known"] > 50
@@ -291,13 +291,13 @@ def test_a_midi_with_no_melody_in_it_is_not_accepted_and_the_melody_is_found_amo
     song = tune()
     ours = notes.ours_of(folder_of(tmp_path, song))
     chords, bass, drums = accompaniment(song)
-    doc = notes.check_answer(notes.Answer("lakh", "midi", "x.mid", smf([chords, drums])), ours)       # threes at once, and drums
+    doc = notes.check_answer(notes.Answer("midi-lib", "midi", "x.mid", smf([chords, drums])), ours)       # threes at once, and drums
     assert not doc["accepted"] and "no melody-like line" in doc["reason"]
-    doc = notes.check_answer(notes.Answer("lakh", "midi", "x.mid", smf(accompaniment(song))), ours)    # a bass is a line, and not this song's
+    doc = notes.check_answer(notes.Answer("midi-lib", "midi", "x.mid", smf(accompaniment(song))), ours)    # a bass is a line, and not this song's
     assert not doc["accepted"] and doc["agree_known"] < 0.3 and not doc["same_song"]
     # the melody on track 3 among a tempo track, chords, bass and drums, with no name to go by
     tracks = [[(0, b"\xff\x51\x03\x07\xa1\x20")], accompaniment(song)[0], line_track(perturbed(song, shift=2.0), channel=2), accompaniment(song)[1], accompaniment(song)[2]]
-    doc = notes.check_answer(notes.Answer("lakh", "midi", "x.mid", smf(tracks)), ours)
+    doc = notes.check_answer(notes.Answer("midi-lib", "midi", "x.mid", smf(tracks)), ours)
     assert doc["accepted"] and doc["candidate"].startswith("track 3")
 
 
@@ -324,7 +324,8 @@ def test_the_sources_file_has_urls_and_paths_and_refuses_what_is_neither(tmp_pat
     assert u.address("The Made Ups", "A Song!") == "https://e.test/the-made-ups/A%20Song%21"
     assert p.pattern("Made [Up]", "Tune") == "/tmp/notes/Made [[]Up] - Tune.*"
     assert p.root == Path("/tmp/notes") and u.root is None
-    for bad in ('name = "a"\nurl = "https://e.test/"\nkind = "scroll"', 'name = "a"', 'name = "a"\nurl = "https://e.test/"\npath = "/x"'):
+    for bad in ('name = "a"\nurl = "https://e.test/"\nkind = "scroll"', 'name = "a"', 'name = "a"\nurl = "https://e.test/"\npath = "/x"',
+                'name = "a"\nurl = "https://e.test/{album}"', 'name = "a"\npath = "/x/{artist}/{}.mid"'):
         f.write_text(f"[[source]]\n{bad}\n")
         with pytest.raises(ValueError):
             notes.load_sources(f)
@@ -371,16 +372,16 @@ def test_a_path_names_its_files_exactly_or_by_the_folded_names_down_its_own_fold
     assert [p.name for p in notes.find_files(flat, "Simon & Garfunkel", "Boxer")] == ["Simon and Garfunkel - The Boxer.mid"]       # "The " and "&"
     assert [p.name for p in notes.find_files(flat, "Simon & Garfunkel", "Sound of Silence")] == []
     assert notes.find_files(flat, "Nobody", "Nothing") == []
-    nested = notes.Source("lakh", path=str(tmp_path / "clean_midi" / "{artist}" / "{song}*.mid"))
-    touch(tmp_path / "clean_midi" / "Beatles, The" / "Yesterday.1.mid")
+    nested = notes.Source("midi-lib", path=str(tmp_path / "collection" / "{artist}" / "{song}*.mid"))
+    touch(tmp_path / "collection" / "Beatles, The" / "Yesterday.1.mid")
     assert notes.find_files(nested, "The Beatles", "Hey Jude") == []
     assert notes.find_files(notes.Source("gone", path=str(tmp_path / "missing" / "{artist}" / "{song}.mid")), "A", "B") == []
 
 
 def test_all_the_versions_of_a_song_in_a_nested_library_are_found(tmp_path):
-    nested = notes.Source("lakh", path=str(tmp_path / "clean_midi" / "{artist}" / "{song}*.mid"))
+    nested = notes.Source("midi-lib", path=str(tmp_path / "collection" / "{artist}" / "{song}*.mid"))
     for name in ("Yesterday.1.mid", "Yesterday.2.mid", "Yesterday.10.mid", "Yesterday Once More.mid", "Help.1.mid"):
-        touch(tmp_path / "clean_midi" / "Beatles, The" / name)
+        touch(tmp_path / "collection" / "Beatles, The" / name)
     found = notes.find_files(nested, "Beatles, The", "Yesterday")           # named as the folder is: the template's own glob
     assert sorted(p.name for p in found) == ["Yesterday Once More.mid", "Yesterday.1.mid", "Yesterday.10.mid", "Yesterday.2.mid"]
     found = notes.find_files(nested, "The Beatles", "Yesterday")            # not as the folder is: the folded names, the files by the template's own glob
