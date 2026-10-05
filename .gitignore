@@ -11,3 +11,6 @@ wheels/
 
 # local tab sources: which sites are best is for whoever runs the pipeline to choose
 tab-sources.toml
+
+# local note sources: where the notes of a song are to be had is for whoever runs the pipeline to choose
+note-sources.toml
