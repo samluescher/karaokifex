@@ -5,7 +5,8 @@ One song at a time. The models are loaded for a song and let go after it, inside
 share (--gpu-lock, else KARAOKIFEX_GPU_LOCK), so a song being made and this take turns on the card. Before a
 song, it waits while the card has less than --free-gb free (the line model and Chatterbox may be on it), up to
 WAIT_MOST s, then does that song on the CPU. A file is made again when what it's made from is newer, or with
---again; a song that fails is logged and the next one taken.
+--again; a song that fails is logged and the next one taken. The chords are made before the melody, which
+reads their key (melody.py).
 """
 
 from __future__ import annotations
@@ -94,15 +95,7 @@ def run(folder: Path, steps: set[str], again: bool, lock, want_free: float, cpu:
         from karaokifex.music.weights import weights
         with lock:
             device = device_for(want_free, cpu)
-            if need_melody:
-                from karaokifex.music._rmvpe import Rmvpe
-                t0 = time.perf_counter()
-                model = Rmvpe(weights("rmvpe.pt"), device)
-                data = melody_mod.analyse(folder, model)
-                del model
-                free_gpu_memory()
-                melody_mod.write(folder, "melody.json", data)
-                done["melody"] = f"{len(data['notes'])} notes from the {data['source']}, {time.perf_counter() - t0:.1f} s"
+            # the chords first: the melody's notes are snapped to their key (melody.analyse reads chords.json)
             if need_chords:
                 t0 = time.perf_counter()
                 model = chords_mod.Btc(weights("btc_model_large_voca.pt"), device)
@@ -111,6 +104,17 @@ def run(folder: Path, steps: set[str], again: bool, lock, want_free: float, cpu:
                 free_gpu_memory()
                 melody_mod.write(folder, "chords.json", data)
                 done["chords"] = f"{len(data['chords'])} chords in {data['key']}, {time.perf_counter() - t0:.1f} s"
+            if need_melody:
+                from karaokifex.music._rmvpe import Rmvpe
+                t0 = time.perf_counter()
+                model = Rmvpe(weights("rmvpe.pt"), device)
+                data = melody_mod.analyse(folder, model)
+                del model
+                free_gpu_memory()
+                melody_mod.write(folder, "melody.json", data)
+                done["melody"] = (f"{len(data['notes'])} notes from the {data['source']}, tuning {data['tuning']:+.0f} c "
+                                  f"({data['tuning_from'] or 'unknown'}), reliability {data['reliability']['score']}, "
+                                  f"{time.perf_counter() - t0:.1f} s")
     if "tab" in steps and (again or newer(tab_json, melody_json, chords_json)) and (melody_json.exists() or chords_json.exists()):
         read = lambda p: json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
         data = tab_mod.make(read(chords_json), read(melody_json))
