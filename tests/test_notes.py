@@ -466,6 +466,23 @@ def test_a_hand_dropped_file_that_is_accepted_ends_the_asking(tmp_path):
     assert json.loads((folder / "notes-source.json").read_text())["path"].endswith("mine.txt")
 
 
+def test_a_file_dropped_in_after_a_check_is_asked_about_again_without_force(tmp_path):
+    import os
+    song = tune()
+    folder = folder_of(tmp_path, song)
+    assert notes.make(folder, [], only_local=True) is None                                  # nothing to ask yet
+    wrong = [notes.Source("web", url="https://e.test/wrong")]
+    assert not notes.make(folder, wrong, fetch=lambda url, headers: smf([line_track(tune(seed=21))]))["accepted"]
+    assert notes.make(folder, wrong, fetch=lambda url, headers: pytest.fail("asked again"))["source"] == "web"      # as it was
+    (folder / "notes").mkdir()
+    chart = folder / "notes" / "mine.txt"
+    chart.write_text(ultrastar(perturbed(song, transpose=2)))
+    later = (folder / "note-check.json").stat().st_mtime + 5
+    os.utime(chart, (later, later))
+    doc = notes.make(folder, wrong, fetch=lambda url, headers: pytest.fail("the chart is accepted: no asking"))
+    assert doc["accepted"] and doc["source"] == "dropped-in" and (folder / "notes-source.json").exists()
+
+
 def test_a_song_with_no_melody_or_no_proper_name_is_left_alone(tmp_path):
     bare = tmp_path / "Made Up - Tune"
     bare.mkdir()
@@ -601,4 +618,7 @@ def test_the_command_lists_what_it_would_ask_and_reports(tmp_path):
                                                          "onset_median_ms": 40, "agree_known": 0.7}))
     out = runner.invoke(notes.main, ["--report", "--library", str(tmp_path)]).output
     assert "1 songs have an answer" in out and "80%" in out
+    figures = json.loads(runner.invoke(notes.main, ["--report", "--json", "--library", str(tmp_path)]).output)
+    assert figures["songs"] == 1 and figures["accepted"] == 1 and figures["known"] == 0
+    assert figures["of_accepted"]["pitch_exact"]["median"] == pytest.approx(0.8)
     assert runner.invoke(notes.main, []).exit_code != 0

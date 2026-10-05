@@ -1,7 +1,7 @@
 """Known notes for a song's lead melody, from sources of your own choosing: the source of truth for the notes we detect.
 
     karaokifex-notes <song folder>... [--sources FILE] [--force] [--only-local] [--dry-run]
-    karaokifex-notes --report <song folder>... | --library <root>
+    karaokifex-notes --report [--json] <song folder>... | --library <root>
 
 Asks the song for its notes where it has them -- first in `<song folder>/notes/` (files you dropped there: `*.txt` an
 UltraStar chart, `*.mid`, `*.midi` or `*.kar` a MIDI file), then each source in the local sources file (never checked
@@ -30,7 +30,8 @@ with dashes. A path that names no file is looked for again by the names folded (
 ignored), in the template's own folders: "<root>/{artist}/{song}*.mid" finds "Beatles, The/Yesterday.3.mid" and its
 sisters ("Yesterday.1.mid", ...), all of which are tried. A path source whose folder is not there is skipped without a
 word, so one can be listed before the files are. `--only-local` asks only the path sources and the dropped-in files;
-`--dry-run` says what would be asked and where, and asks nothing; `--force` asks again for songs already checked.
+`--dry-run` says what would be asked and where, and asks nothing; `--force` asks again for songs already checked (a file
+dropped in since the check is asked about again without it).
 The repo has only note-sources.example.toml, with made-up addresses: the best sources are for whoever runs the pipeline
 to find.
 
@@ -98,7 +99,7 @@ ACCEPT_AGREE = 0.55         # of the file's time within a semitone of our pitch 
 ACCEPT_OURS = 0.50          # of our pitched time with a known note under it
 ACCEPT_ALIGNED = 0.60       # of the file's time on the recording at all
 SAME_SONG = 0.40            # agree_known under this is another song's (the most the unrelated reach: see the header)
-LINES_PER_FILE = 6          # MIDI lines tried a file, the likeliest first
+LINES_PER_FILE = 10         # MIDI lines tried a file, the likeliest first
 FILES_PER_SOURCE = 8        # the most files of one source tried (a collection may have several versions of a song)
 VERSION = 1
 
@@ -682,8 +683,9 @@ def make(folder: Path, sources: list[Source], *, force: bool = False, only_local
     notes-source.json (and applied to melody.json), every answer's check to note-check.json (the accepted one's, else the
     best of the rest). Returns note-check.json's content, None where there was no answer."""
     target, check_file = folder / "notes-source.json", folder / "note-check.json"
-    if (target.exists() or check_file.exists()) and not force:
-        log.info("%s: checked already", folder.name)
+    checked = [f for f in (target, check_file) if f.exists()]
+    if checked and not force and not any(p.stat().st_mtime > min(f.stat().st_mtime for f in checked) for p in dropped_in(folder)):
+        log.info("%s: checked already", folder.name)           # (a file dropped in since is asked about again)
         return read_json(check_file)
     if " - " not in folder.name:
         log.warning("%s: not named “Artist - Song”, skipped", folder.name)
@@ -890,9 +892,10 @@ def library_folders(root: Path) -> list[Path]:
 @click.option("--only-local", is_flag=True, help="Only the path sources and the files dropped in <folder>/notes/: no request goes out.")
 @click.option("--dry-run", is_flag=True, help="Say what would be asked and where, and ask nothing.")
 @click.option("--report", is_flag=True, help="Instead of asking: how right our notes are, over the note-check.json files of the folders.")
+@click.option("--json", "as_json", is_flag=True, help="With --report: the figures as JSON.")
 @click.option("-v", "--verbose", is_flag=True, help="Show debug output.")
 def main(folders: tuple[Path, ...], library: Path | None, sources_path: Path | None, force: bool, only_local: bool, dry_run: bool,
-         report: bool, verbose: bool) -> None:
+         report: bool, as_json: bool, verbose: bool) -> None:
     """Write notes-source.json and note-check.json into each song folder: the notes a source of yours has for it, and how our
     detected notes agree with them."""
     setup_logging(verbose)
@@ -901,7 +904,7 @@ def main(folders: tuple[Path, ...], library: Path | None, sources_path: Path | N
         raise click.UsageError("name song folders, or --library <root>")
     if report:
         checks, known = collect(todo)
-        click.echo(format_report(checks, known))
+        click.echo(json.dumps({**summary(checks), "known": known}, indent=1) if as_json else format_report(checks, known))
         return
     path = sources_file(sources_path)
     sources = load_sources(path) if path else []
