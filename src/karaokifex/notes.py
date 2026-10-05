@@ -59,9 +59,13 @@ What the song folder gets:
                     keeps the notes as detected so that it can be made again, known says from where.
 
 Accepting: at least ACCEPT_AGREE of the file's time lies within a semitone of our pitch line, at least ACCEPT_OURS of our
-pitch has a known note under it, at least ACCEPT_ALIGNED of the file's time falls on the recording. (Set against the
-library: the melodies of other songs reach 0.40 of the file's time at most and a line of bass roots or pads 0.30,
-while a file made from our own notes, warped and thinned and moved a semitone here and there, comes to 0.80 or more.)
+pitch has a known note under it, at least ACCEPT_ALIGNED of the file's time falls on the recording. Where the line is drawn
+(measured on a library of 290 songs): the melody of another song, put through the same search for a shift, a warp and an
+octave, lies within a semitone of our pitch line for 18% of the file's time at the median, 36% at the 99th percentile and 43%
+at the most (799 pairs); a line of bass roots, of chord roots in eighths or of the tops of pads, 30% at the most (90 lines).
+A file made of our own notes, thinned by a seventh, a tenth of them a semitone off, started at another time, run at another
+speed and moved by whole octaves, comes to 68% at the least and 80% at the median (140 files, the weakest songs among them). So
+a file is accepted from 55%, and an answer under SAME_SONG (40%) is called obviously another song's in the report.
 """
 
 from __future__ import annotations
@@ -318,8 +322,8 @@ def parse_ultrastar(data: bytes | str) -> list[Line]:
     notes: dict[str, list[tuple[int, int, int, str]]] = {"P1": []}
     player, offset = "P1", 0.0
     for raw in body:
-        kind, _, rest = raw.partition(" ")
-        kind = kind.strip()
+        parts = raw.split(None, 1)
+        kind, rest = parts[0], parts[1] if len(parts) > 1 else ""
         if kind == "E":
             break
         if re.fullmatch(r"P\s*\d", raw.strip()):
@@ -327,7 +331,7 @@ def parse_ultrastar(data: bytes | str) -> list[Line]:
             notes.setdefault(player, [])
             offset = 0.0
             continue
-        fields = rest.split(" ", 3)
+        fields = rest.split(None, 3)
         try:
             if kind in (":", "*"):
                 start, length, pitch = int(float(fields[0])), int(float(fields[1])), int(float(fields[2]))
@@ -382,6 +386,8 @@ def parse_smf(data: bytes) -> tuple[int, list[list[tuple]]]:
     pos = at + 8 + struct.unpack(">I", data[at + 4:at + 8])[0]
     if division & 0x8000:
         division = -((256 - ((division >> 8) & 0xFF)) * (division & 0xFF))
+    if division == 0:
+        raise ValueError("a MIDI file with no time division")
     tracks: list[list[tuple]] = []
     while pos + 8 <= len(data):
         kind, length = data[pos:pos + 4], struct.unpack(">I", data[pos + 4:pos + 8])[0]
@@ -562,12 +568,17 @@ def check_answer(answer: Answer, ours: align.Ours) -> dict:
     """note-check.json's content for one answer: its best line (the best-agreeing track or player), measured against ours."""
     try:
         lines = parse_ultrastar(answer.data) if answer.kind == "ultrastar" else midi_lines(answer.data)
-    except (ValueError, struct.error) as e:
+    except Exception as e:  # noqa: BLE001  (a damaged file is no reason to stop a library's run)
+        log.warning("%s: %s", answer.file, e)
         return {"version": VERSION, "source": answer.source, "kind": answer.kind, "file": answer.file, "accepted": False,
                 "reason": f"not readable as {answer.kind}: {e}", "same_song": False, "agree_known": 0.0}
     best, best_line = None, None
     for line in lines[:LINES_PER_FILE]:
-        result = align.align(line.notes, ours)
+        try:
+            result = align.align(line.notes, ours)
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s (%s): %s", answer.file, line.label, e)
+            continue
         if result is not None and (best is None or result["agree_known"] > best["agree_known"]):
             best, best_line = result, line
     accepted, reason = verdict(best, len(lines))
@@ -849,8 +860,8 @@ def format_report(checks: list[dict], known: int) -> str:
     lines = [f"{s['songs']} songs have an answer from a source ({s['answers']} answers in all): {s['accepted']} songs accepted "
              f"({known} carry notes-source.json), {s['rejected']} rejected. {s['obviously_another']} answers are obviously another "
              f"song's (under {SAME_SONG:.0%} of the file near our pitch line) and are left out of the second figure."]
-    for title, key in (("accepted", "of_accepted"), ("every answer that is not obviously another song", "of_all_same_song")):
-        lines.append(f"\nHow right our notes are, over the {title}:")
+    for title, key in (("the accepted answers", "of_accepted"), ("every answer that is not obviously another song's", "of_all_same_song")):
+        lines.append(f"\nHow right our notes are, over {title}:")
         for label, k, pct in (("same semitone (pitch_exact)", "pitch_exact", True), ("within a semitone (pitch_within_1)", "pitch_within_1", True),
                               ("file's time near our pitch line (agree_known)", "agree_known", True), ("start of a note, median ms", "onset_median_ms", False)):
             d = s[key][k]
@@ -893,7 +904,10 @@ def main(folders: tuple[Path, ...], library: Path | None, sources_path: Path | N
             for source, where in asked(folder, sources, only_local):
                 click.echo(f"{folder.name}: {source}: {where}")
             continue
-        make(folder, sources, force=force, only_local=only_local)
+        try:
+            make(folder, sources, force=force, only_local=only_local)
+        except Exception as e:  # noqa: BLE001  (the next song is still to be done)
+            log.exception("%s failed: %s", folder.name, e)
 
 
 if __name__ == "__main__":

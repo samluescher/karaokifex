@@ -182,6 +182,11 @@ def test_a_chart_may_change_its_bpm_and_may_be_a_duet_in_any_encoding():
     assert notes.parse_ultrastar("no bpm here\n: 0 4 0 a\n") == [] and notes.parse_ultrastar("#BPM:0\n: 0 4 0 a\n") == []
 
 
+def test_a_chart_may_separate_its_fields_with_tabs_and_leaves_a_syllable_out():
+    (line,) = notes.parse_ultrastar("#BPM:120\r\n#GAP:0\r\n:\t0\t4\t0\tHel\r\n: 4 4 2\r\n*  8  4  4  lo wor\r\nE\r\n")
+    assert [(n[2], n[3]) for n in line.notes] == [(60, "Hel"), (62, None), (64, "lo wor")]
+
+
 def test_an_ultrastar_chart_made_of_a_song_comes_back_as_its_notes():
     song = tune()
     (line,) = notes.parse_ultrastar(ultrastar([(s, l, m) for s, l, m in song], comma=True))
@@ -290,6 +295,8 @@ def test_too_little_to_compare_is_said_so(tmp_path):
     assert "no melody-like line" in notes.check_answer(empty, ours)["reason"]
     garbled = notes.Answer("x", "midi", "x.mid", b"MThd\x00\x00")
     assert "not readable" in notes.check_answer(garbled, ours)["reason"]
+    no_division = notes.Answer("x", "midi", "x.mid", smf([line_track(tune())], division=0))
+    assert "not readable" in notes.check_answer(no_division, ours)["reason"]
 
 
 # ---------------------------------------------------------------- the sources, and where the files are
