@@ -89,6 +89,13 @@ def test_a_warp_is_a_line_through_the_path_and_has_no_time_outside_it():
     assert scale == pytest.approx(1.1, abs=1e-6) and offset == pytest.approx(40 * 0.02, abs=1e-3) and dev < 1e-6
 
 
+def test_the_share_of_a_file_in_the_sung_windows():
+    known = [(1.0, 1.0, 60, None, True), (3.0, 2.0, 62, None, True), (9.0, 1.0, 64, None, True), (float("nan"), 5.0, 65, None, False)]
+    assert align.in_words(known, [(0.5, 1.5), (3.5, 4.0), (10.0, 12.0)]) == pytest.approx((0.5 + 0.5 + 0.0) / 4.0)
+    assert align.in_words(known, None) is None and align.in_words(known, []) is None
+    assert align.in_words([(float("nan"), 1.0, 60, None, False)], [(0.0, 9.0)]) is None
+
+
 def test_too_little_of_either_side_is_no_alignment():
     song = melody()
     assert align.align(song[:10], ours_of(song)) is None                                  # ten notes

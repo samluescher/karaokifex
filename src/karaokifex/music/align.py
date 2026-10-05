@@ -32,12 +32,13 @@ measure() then says how right our notes are against the warped file (notes.py wr
                   one (our note on the song's grid, the file's with transpose)
   onset_median_ms, onset_p90_ms  how far our note starts lie from the known ones' (our nearest start within 0.3 s)
 
-The word windows of timings.json are not used here: they do not depend on pitch, and notes.py reports how much of the
-file lies in them.
+The word windows of timings.json do not depend on pitch, so they are no part of the alignment; in_words says how much of the
+file's time falls in them.
 """
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 
 import numpy as np
@@ -61,10 +62,12 @@ NEG = -1e9
 
 @dataclass
 class Ours:
-    """The lead we detected: its pitch line (MIDI on the song's grid, NaN where none or unsure) a STEP s and its notes
-    [[start, length, MIDI note on the grid, cents, ...], ...]."""
+    """The lead we detected: its pitch line (MIDI on the song's grid, NaN where none or unsure) a STEP s, its notes
+    [[start, length, MIDI note on the grid, cents, ...], ...] and, where the song has timings, the windows its words are
+    sung in ([(start, end), ...], widened as melody.py counts a word sung), None where it has none."""
     pitch: np.ndarray
     notes: list[list]
+    windows: list[tuple[float, float]] | None = None
 
     @property
     def seconds(self) -> float:
@@ -254,6 +257,24 @@ def measure_line(known_w: list[tuple], ours: Ours, shift: int, total: float, nea
             "exact_line": float(((np.round(ours.pitch) == line) & both).sum() / max(both.sum(), 1))}
 
 
+def in_words(known_w: list[tuple], windows: list[tuple[float, float]] | None) -> float | None:
+    """The share of the warped file's time (notes as warped() gives them) that lies in the sung windows, None without any."""
+    if not windows:
+        return None
+    starts = [w[0] for w in windows]
+    ends = [w[1] for w in windows]
+    inside = total = 0.0
+    for start, length, *_, ok in known_w:
+        if not ok:
+            continue
+        total += length
+        k = bisect.bisect_right(ends, start)
+        while k < len(windows) and starts[k] < start + length:
+            inside += max(0.0, min(start + length, ends[k]) - max(start, starts[k]))
+            k += 1
+    return inside / total if total else None
+
+
 def measure_notes(known_w: list[tuple], ours: Ours, shift: int) -> dict:
     """How our notes agree with the warped file's: matched, missing, extra, pitch_exact, pitch_within_1, the onsets
     and a sample of the wrong ones."""
@@ -323,6 +344,7 @@ def align(known: list[tuple], ours: Ours) -> dict | None:
            "aligned": sum(k[1] for k, w in zip(known, known_w) if w[4]) / max(total, 1e-9)}
     out.update(measure_line(known_w, ours, transpose, total * scale))
     out.update(measure_notes(known_w, ours, transpose))
+    out["in_words"] = in_words(known_w, ours.windows)
     return out
 
 

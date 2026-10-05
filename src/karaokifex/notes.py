@@ -47,8 +47,8 @@ What the song folder gets:
                     added to the file's notes), offset and warp {scale, offset, max_dev, span, aligned} (the recording's
                     time of the file's 0, and the file's time on the recording's clock as the straight line that fits it),
                     notes_known, notes_ours, matched, missing, extra, pitch_exact, pitch_within_1, onset_median_ms,
-                    onset_p90_ms, covered_known, covered_ours, agree_known (see music/align.py), wrong (a sample of
-                    [time, ours, known]), others (the checks of the other answers, each as this one)}
+                    onset_p90_ms, covered_known, covered_ours, agree_known, in_words (see music/align.py), wrong (a sample
+                    of [time, ours, known]), others (the checks of the other answers, each as this one)}
   notes-source.json when an answer is accepted: {version: 1, source, kind, url or path, transpose, notes: [[start s, length
                     s, MIDI note on the song's grid, syllable or null], ...] on the recording's clock, offset, the
                     check's headline numbers}. The file and its `source` are what tag a song as having known notes, as
@@ -534,7 +534,9 @@ def ours_of(folder: Path) -> align.Ours | None:
             pitch[~melody_mod.sung_mask(len(pitch), step, melody_mod.sung_windows(words))] = np.nan
     if abs(step - align.STEP) > 1e-6:
         pitch = np.interp(np.arange(0, len(pitch) * step, align.STEP) / step, np.arange(len(pitch)), pitch)
-    return align.Ours(pitch, melody.get("notes_detected") or melody.get("notes") or [])
+    from karaokifex.music import melody as melody_mod
+    words = melody_mod.read_words(folder)
+    return align.Ours(pitch, melody.get("notes_detected") or melody.get("notes") or [], melody_mod.sung_windows(words) if words else None)
 
 
 # ---------------------------------------------------------------- checking an answer
@@ -598,7 +600,7 @@ def check_answer(answer: Answer, ours: align.Ours) -> dict:
                  "span": [round(span[0], 2), round(span[1], 2)], "aligned": round(best["aligned"], 3)},
         **{k: (None if best[k] is None else round(best[k], 3) if isinstance(best[k], float) else best[k])
            for k in ("notes_known", "notes_ours", "matched", "missing", "extra", "pitch_exact", "pitch_within_1",
-                     "onset_median_ms", "onset_p90_ms", "covered_known", "covered_ours", "agree_known")},
+                     "onset_median_ms", "onset_p90_ms", "covered_known", "covered_ours", "agree_known", "in_words")},
         "wrong": best["wrong"]})
     out["_notes"] = [[round(n[0], 3), round(n[1], 3), n[2] + best["transpose"], n[3]] for n in aligned]
     return out

@@ -264,6 +264,21 @@ def test_a_perturbed_ultrastar_chart_is_accepted_too(tmp_path):
     assert doc["warp"]["offset"] == pytest.approx(0.0, abs=0.4)
 
 
+def test_how_much_of_the_file_lies_in_the_sung_words_is_said_where_the_song_has_timings(tmp_path):
+    song = tune()
+    folder = folder_of(tmp_path, song)
+    ours = notes.ours_of(folder)
+    assert ours.windows is None
+    answer = notes.Answer("lakh", "midi", "x.mid", smf([line_track(perturbed(song, shift=1.0))]))
+    assert notes.check_answer(answer, ours)["in_words"] is None
+    words = [{"start": s, "end": s + l, "text": "la"} for s, l, _ in song if s < 40]       # words for the first notes only
+    (folder / "timings.json").write_text(json.dumps({"lines": [words]}))
+    ours = notes.ours_of(folder)
+    assert ours.windows and ours.windows[0][0] == pytest.approx(song[0][0] - 0.25)
+    doc = notes.check_answer(answer, ours)
+    assert 0.3 < doc["in_words"] < 0.7 and doc["accepted"]                                   # the notes after 40 s are outside every word
+
+
 def test_the_melody_of_another_song_is_not_accepted(tmp_path):
     ours = notes.ours_of(folder_of(tmp_path, tune(seed=7)))
     answer = notes.Answer("lakh", "midi", "x.mid", smf([line_track(tune(seed=21, phrases=12))]))

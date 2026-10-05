@@ -47,6 +47,31 @@ def test_the_spectral_peaks_of_a_tone_are_at_its_frequency():
     assert melody.spectral_peaks(np.zeros(8000, dtype=np.float32), 16000)[0].size == 0
 
 
+def test_the_tuning_is_read_from_the_small_reference_before_the_backing_stem(tmp_path):
+    import soundfile as sf
+    assert melody.backing_tuning(tmp_path) is None                                    # no backing to read
+    (tmp_path / "stems").mkdir()
+    sf.write(str(tmp_path / "stems" / "karaoke_backing.wav"), tones(-20.0), 16000)
+    assert melody.backing_tuning(tmp_path)[0] == pytest.approx(-20.0, abs=2.0)
+    sf.write(str(tmp_path / "reference.flac"), tones(30.0), 16000, format="FLAC")
+    cents, conf = melody.backing_tuning(tmp_path)
+    assert cents == pytest.approx(30.0, abs=2.0) and conf > 0.5                         # the reference is the one read
+    sf.write(str(tmp_path / "stems" / "karaoke_backing.wav"), np.repeat(tones(12.0)[:, None], 2, axis=1), 16000)
+    (tmp_path / "reference.flac").unlink()
+    assert melody.backing_tuning(tmp_path)[0] == pytest.approx(12.0, abs=2.0)           # a stem in stereo is mixed down
+
+
+def test_the_key_and_the_words_are_read_from_the_songs_folder(tmp_path):
+    assert melody.read_key(tmp_path) is None and melody.read_words(tmp_path) is None
+    (tmp_path / "chords.json").write_text('{"key": "A minor", "chords": []}')
+    (tmp_path / "timings.json").write_text(json.dumps({"lines": [[{"start": 1, "end": 2, "text": "a"}, {"start": 2, "text": "b"}]]}))
+    assert melody.read_key(tmp_path) == "A minor" and melody.read_words(tmp_path) == [(1.0, 2.0)]
+    (tmp_path / "chords.json").write_text("not json")
+    assert melody.read_key(tmp_path) is None
+    (tmp_path / "timings.json").write_text('{"lines": []}')
+    assert melody.read_words(tmp_path) is None
+
+
 def test_a_backing_of_noise_has_no_tuning_to_speak_of():
     noise = np.random.default_rng(1).normal(0, 0.1, 16000 * 20).astype(np.float32)
     assert melody.tuning_of(noise, 16000)[1] < melody.BACKING_SURE
