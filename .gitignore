@@ -11,3 +11,6 @@ wheels/
 
 # local tab sources: which sites are best is for whoever runs the pipeline to choose
 tab-sources.toml
+
+# macOS Finder metadata
+.DS_Store
