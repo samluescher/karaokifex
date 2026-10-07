@@ -14,3 +14,6 @@ tab-sources.toml
 
 # local note sources: where the notes of a song are to be had is for whoever runs the pipeline to choose
 note-sources.toml
+
+# macOS Finder metadata
+.DS_Store
