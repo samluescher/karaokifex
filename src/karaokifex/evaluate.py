@@ -131,23 +131,23 @@ def load_ours(folder: Path) -> list[TimedWord]:
 
 def recompute(folder: Path, *, baseline: bool = False) -> list[TimedWord]:
     """Re-run the (pure) alignment from the cached intermediate files of a song folder."""
-    from karaokifex.activity import Activity
-    from karaokifex.pipeline import align_candidates, load_forced
+    from karaokifex.pipeline import _heard, align_candidates, load_forced
     from karaokifex.steps import lyrics, transcription
-    from karaokifex.timing import filter_heard, lines_from_words
+    from karaokifex.timing import BACKING, filter_heard, lines_from_words
     from karaokifex.workspace import Workspace
 
     ws = Workspace(folder, folder.name)
     candidates = lyrics.load_lyrics(ws.lyrics_json)
-    words, language = transcription.load_transcript(ws.transcript_json)
-    activity = None if baseline or not ws.lead_activity.exists() else Activity.load(ws.lead_activity)
+    words, language, activity, backing_activity = _heard(ws)  # the backing vocals' words too, when transcribed
+    if baseline:
+        words, activity, backing_activity = transcription.load_transcript(ws.transcript_json)[0], None, None
     mix = transcription.load_transcript(ws.transcript_mix_json)[0] if ws.transcript_mix_json.exists() else None
     if not candidates:
-        return [w for line in lines_from_words(filter_heard(words, activity)) for w in line.words]
+        return [w for line in lines_from_words(filter_heard([w for w in words if w.source != BACKING], activity)) for w in line.words]
     forced = [] if baseline else load_forced(ws.forced_json)
     # An lrc reference is usually the lrclib entry itself: its word tags would make the comparison circular.
     ranked = align_candidates(candidates, words, language, activity, forced, mix=None if baseline else mix,
-                              use_word_tags=not (folder / REFERENCE_LRC).exists())
+                              use_word_tags=not (folder / REFERENCE_LRC).exists(), backing_activity=backing_activity)
     return [word for line in ranked[0][1].lines for word in line.words]
 
 

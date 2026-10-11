@@ -8,6 +8,7 @@ from karaokifex.timing import (
     AlignmentPlan,
     _similarity,
     align_lyrics,
+    backing_heard,
     fill_unlyricked,
     filter_heard,
     forced_requests,
@@ -230,6 +231,24 @@ def test_prompted_words_over_a_phrase_heard_otherwise_are_dropped():
     unprompted = heard(("round", 1.0, 1.2), ("the", 1.3, 1.4), ("old", 1.5, 1.8), ("well", 1.9, 2.2),
                        ("red", 5.0, 5.2), ("kit", 5.3, 5.5), ("flies", 5.6, 5.9))
     assert [w.text for w in merge_heard(prompted, unprompted)] == ["round", "the", "old", "well", "red", "kite", "flies"]
+
+
+def test_backing_lines_are_placed_on_the_backing_vocals_and_lead_lines_keep_the_lead():
+    lines = [LyricLine(10.0, "red kite flies"), LyricLine(14.0, "(over the hill)"), LyricLine(18.0, "blue boat sails")]
+    lead = heard(("red", 10.0, 10.3), ("kite", 10.4, 10.7), ("flies", 10.8, 11.1),
+                 ("blue", 18.0, 18.3), ("boat", 18.4, 18.7), ("sails", 18.8, 19.1))
+    lead_voice = voice(30, (10.0, 11.2), (18.0, 19.2))
+    # the backing sings its line late, at 15.5, and echoes the lead's "blue boat sails" at 20
+    backing_voice = voice(30, (15.5, 16.8), (20.0, 21.2))
+    backing = backing_heard(heard(("over", 15.5, 15.8), ("the", 15.9, 16.1), ("hill", 16.2, 16.6),
+                                  ("blue", 20.0, 20.3), ("boat", 20.4, 20.7), ("sails", 20.8, 21.1),
+                                  ("noise", 25.0, 25.3)), backing_voice)  # "noise" sung nowhere: filtered out
+    assert [w.text for w in backing][-1] == "sails"
+    result = align_lyrics(lines, sorted([*lead, *backing], key=lambda w: w.start), activity=lead_voice,
+                          backing_activity=backing_voice)
+    starts = [line.start for line in result.lines]
+    assert starts[1] == pytest.approx(15.5, abs=0.1)
+    assert starts[2] == pytest.approx(18.0, abs=0.1)
 
 
 def test_held_last_note_extends_the_line():

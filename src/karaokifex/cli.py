@@ -86,6 +86,10 @@ log = logging.getLogger("karaokifex")
               show_default=True, help="Cache folder for separation models.")
 @click.option("--mix-vote", is_flag=True,
               help="Also transcribe the full mix and let both transcriptions vote on word times (slower).")
+@click.option("--backing-vocals", is_flag=True,
+              help="Also take the backing vocals out of the karaoke backing and transcribe them, so lyric lines "
+                   "the backing singers sing (in parentheses) are placed where they are heard (about 30 s more "
+                   "of the GPU). Kept as stems/backing_vocals.wav.")
 @click.option("--palette", is_flag=True,
               help="Find the video's dominant colours (5, each with its share of the picture) and write them "
                    "to metadata.json.")

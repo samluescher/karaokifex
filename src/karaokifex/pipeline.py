@@ -38,7 +38,7 @@ from rich.live import Live
 
 from karaokifex.activity import Activity
 from karaokifex.ass import build_ass
-from karaokifex.config import Config
+from karaokifex.config import DEFAULT_BACKING_MODEL, Config
 from karaokifex.console import TaskBoard, console, register_tasks
 from karaokifex.gpu import free_gpu_memory
 from karaokifex.metadata import guess_artist_song, name_guesses, title_segments
@@ -48,9 +48,11 @@ from karaokifex.palette import dominant_colors, without_bars
 from karaokifex.runner import RunReport, Task, TaskContext, TaskRunner, current_task
 from karaokifex.steps import download, lyrics, media, musicbrainz, separation, transcription
 from karaokifex.timing import (
+    BACKING,
     Alignment,
     AlignmentPlan,
     align_lyrics,
+    backing_heard,
     fill_unlyricked,
     filter_heard,
     forced_requests,
@@ -169,6 +171,17 @@ def build_tasks(job: Job) -> list[Task]:
         Task("transcribe", partial(_transcribe, job), deps=("separate_karaoke", "load_whisper", "lyrics"),
              outputs=(ws.transcript_json,), gpu=True, model=True, description="whisperx on the lead vocals, with and without the lyrics as prompt"),
     ]
+    if cfg.backing_vocals:
+        tasks += [
+            Task("separate_backing", partial(_separate_backing, job), deps=("separate_karaoke",),
+                 outputs=(ws.backing_vocals, ws.backing_activity), gpu=True, model=True,
+                 description=f"{DEFAULT_BACKING_MODEL}: the backing vocals out of the karaoke backing"),
+            # after transcribe, to take over its model
+            Task("transcribe_backing", partial(_transcribe_backing, job),
+                 deps=("separate_backing", "load_whisper", "lyrics", "transcribe"),
+                 outputs=(ws.transcript_backing_json,), gpu=True, model=True,
+                 description="whisperx on the backing vocals, with and without the lyrics as prompt"),
+        ]
     if cfg.mix_vote:
         # Depends on transcribe so it can take over the loaded model instead of loading it twice.
         tasks.append(Task("transcribe_mix", partial(_transcribe_mix, job),
@@ -189,7 +202,8 @@ def build_tasks(job: Job) -> list[Task]:
         tasks.append(Task("quality", partial(_quality, job),
                           deps=("download", "render") + (("original",) if cfg.keep_source else ()),
                           outputs=(ws.quality_json,), description="resolution, frame rate, codecs, bitrates"))
-    subtitle_deps = ("lyrics", "transcribe", "vocal_activity", "force_align")
+    backing = ("transcribe_backing",) if cfg.backing_vocals else ()
+    subtitle_deps = ("lyrics", "transcribe", "vocal_activity", "force_align") + backing
     # Without burned-in lyrics the render doesn't wait for them; the subtitles step still writes the lyrics files.
     render_deps = ("extract_video", "separate_karaoke") + (("subtitles",) if cfg.burn_lyrics else ())
     if not cfg.burn_lyrics:
@@ -197,7 +211,7 @@ def build_tasks(job: Job) -> list[Task]:
     else:
         render_description = "darken, karaoke audio, burn in subtitles" + (" (debug colours)" if cfg.debug_ass else "")
     tasks += [
-        Task("force_align", partial(_force_align, job), deps=("lyrics", "transcribe", "vocal_activity"),
+        Task("force_align", partial(_force_align, job), deps=("lyrics", "transcribe", "vocal_activity") + backing,
              outputs=(ws.forced_json,), gpu=True, model=True, description="wav2vec2 alignment of the known lyrics"),
         Task("subtitles", partial(_subtitles, job),
              deps=subtitle_deps + (("transcribe_mix",) if cfg.mix_vote else ()),
@@ -433,12 +447,14 @@ def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target
                                                language=dialects.whisper_language(_song_language(job, candidates)),
                                                prompt=prompt, on_stage=ctx.note)
     log.info("heard %d words in %s (language: %s)", len(words), audio.name, language)
-    if prompt and target == job.workspace.transcript_json:
+    unprompted = {job.workspace.transcript_json: job.workspace.transcript_noprompt_json,
+                  job.workspace.transcript_backing_json: job.workspace.transcript_backing_noprompt_json}
+    if prompt and target in unprompted:
         # Prompted with the lyrics whisper hears their words better but skips repeats; a pass without the
         # prompt fills the places the first heard nothing.
         plain, _ = transcription.transcribe(model, audio, job.device, language=language, prompt=None,
                                             on_stage=lambda stage: ctx.note(f"{stage} (no prompt)"))
-        transcription.save_transcript(plain, language, job.workspace.transcript_noprompt_json)
+        transcription.save_transcript(plain, language, unprompted[target])
         merged = merge_heard(words, plain)
         log.info("%d more words heard without the lyrics as prompt", len(merged) - len(words))
         words = merged
@@ -450,8 +466,8 @@ def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target
 def _transcribe(job: Job, ctx: TaskContext) -> Any:
     model = _whisper_model(job, ctx, "load_whisper")
     _transcribe_into(job, ctx, model, job.workspace.karaoke_lead, job.workspace.transcript_json)
-    if job.config.mix_vote:
-        return model  # handed over to transcribe_mix, which frees it
+    if job.config.mix_vote or job.config.backing_vocals:
+        return model  # handed over to transcribe_mix or transcribe_backing, which frees it
     del model
     free_gpu_memory()
     return None
@@ -464,16 +480,60 @@ def _transcribe_mix(job: Job, ctx: TaskContext) -> None:
     free_gpu_memory()
 
 
+def _separate_backing(job: Job, ctx: TaskContext) -> None:
+    """The backing vocals: the vocals of the karaoke backing, which the karaoke model leaves the backing singers in."""
+    import soundfile
+
+    ws, cfg = job.workspace, job.config
+    rest = ws.stems_dir / "backing_without_vocals.wav"  # the model's other half: not wanted, not left lying about
+    separation.separate(ws.karaoke_backing, model=DEFAULT_BACKING_MODEL, model_dir=cfg.model_dir,
+                        stems={"vocals": ws.backing_vocals, "instrumental": rest}, overlap=cfg.separation_overlap,
+                        fp16=cfg.fp16, verbose=cfg.verbose, on_stage=ctx.note)
+    rest.unlink(missing_ok=True)
+    samples, rate = soundfile.read(str(ws.backing_vocals), dtype="float32")
+    activity = Activity.compute(samples, rate)
+    partial_file = partial_path(ws.backing_activity)
+    activity.save(partial_file)
+    partial_file.replace(ws.backing_activity)
+    log.info("backing vocals audible %.0f%% of the time", 100 * float(activity.voiced.mean()) if activity.duration else 0)
+
+
+def _transcribe_backing(job: Job, ctx: TaskContext) -> None:
+    model = _whisper_model(job, ctx, "transcribe", "load_whisper")
+    _transcribe_into(job, ctx, model, job.workspace.backing_vocals, job.workspace.transcript_backing_json)
+    del model
+    free_gpu_memory()
+
+
+def _heard(ws: Workspace) -> tuple[list[TimedWord], str, Activity | None, Activity | None]:
+    """What was heard: the lead's words, the backing vocals' (backing_heard) with them when they were transcribed,
+    the language, and the lead's and the backing's activity."""
+    words, language = transcription.load_transcript(ws.transcript_json)
+    activity = Activity.load(ws.lead_activity) if ws.lead_activity.exists() else None
+    backing_activity = None
+    if ws.transcript_backing_json.exists() and ws.backing_activity.exists():
+        backing_activity = Activity.load(ws.backing_activity)
+        backing = backing_heard(transcription.load_transcript(ws.transcript_backing_json)[0], backing_activity, words)
+        words = sorted([*words, *backing], key=lambda w: w.start)
+    return words, language, activity, backing_activity
+
+
 def _force_align(job: Job, ctx: TaskContext) -> None:
     ws = job.workspace
     candidates = lyrics.load_lyrics(ws.lyrics_json)
-    words, language = transcription.load_transcript(ws.transcript_json)
-    activity = Activity.load(ws.lead_activity)
-    plans = [plan_alignment(c.lines, words, activity, language=language) for c in candidates]
-    requests = [((number, index), line_words, window)
-                for number, (candidate, plan) in enumerate(zip(candidates, plans))
-                for index, line_words, window in forced_requests(candidate.lines, plan)]
-    results = transcription.force_align(requests, ws.karaoke_lead, language, job.device, on_stage=ctx.note)
+    words, language, activity, backing_activity = _heard(ws)
+    plans = [plan_alignment(c.lines, words, activity, language=language, backing_activity=backing_activity)
+             for c in candidates]
+    # the backing lines on the backing vocals, when there are, the others on the lead
+    split = backing_activity is not None and ws.backing_vocals.exists()
+    results = {}
+    for audio, which in ((ws.karaoke_lead, False if split else None), (ws.backing_vocals, True)):
+        if which is True and not split:
+            continue
+        requests = [((number, index), line_words, window)
+                    for number, (candidate, plan) in enumerate(zip(candidates, plans))
+                    for index, line_words, window in forced_requests(candidate.lines, plan, backing=which)]
+        results |= transcription.force_align(requests, audio, language, job.device, on_stage=ctx.note)
 
     entries = []
     for number, (candidate, plan) in enumerate(zip(candidates, plans)):
@@ -498,15 +558,16 @@ def forced_lines(entry: dict[str, Any]) -> list[list[TimedWord] | None]:
 
 def align_candidates(candidates: list[Lyrics], words: list[TimedWord], language: str | None,
                      activity: Activity | None, forced: list[dict[str, Any]], *,
-                     mix: list[TimedWord] | None = None, use_word_tags: bool = True
-                     ) -> list[tuple[Lyrics, Alignment]]:
+                     mix: list[TimedWord] | None = None, use_word_tags: bool = True,
+                     backing_activity: Activity | None = None) -> list[tuple[Lyrics, Alignment]]:
     """Align every lyrics candidate; best (by how well it fits the audio) first."""
     results = []
     for number, candidate in enumerate(candidates):
         entry = forced[number] if number < len(forced) and forced[number]["lrclib_id"] == candidate.lrclib_id else None
         plan = AlignmentPlan.from_dict(entry["plan"]) if entry else None
         alignment = align_lyrics(candidate.lines, words, plan=plan, forced=forced_lines(entry) if entry else None,
-                                 activity=activity, language=language, mix_heard=mix, use_word_tags=use_word_tags)
+                                 activity=activity, language=language, mix_heard=mix, use_word_tags=use_word_tags,
+                                 backing_activity=backing_activity)
         results.append((candidate, alignment))
     return sorted(results, key=lambda item: -item[1].quality)  # stable: lrclib's ranking breaks ties
 
@@ -514,18 +575,19 @@ def align_candidates(candidates: list[Lyrics], words: list[TimedWord], language:
 def _subtitles(job: Job, ctx: TaskContext) -> str:
     ws = job.workspace
     candidates = lyrics.load_lyrics(ws.lyrics_json)
-    words, language = transcription.load_transcript(ws.transcript_json)
-    activity = Activity.load(ws.lead_activity) if ws.lead_activity.exists() else None
+    words, language, activity, backing_activity = _heard(ws)
     mix = transcription.load_transcript(ws.transcript_mix_json)[0] if job.config.mix_vote else None
     if candidates:
-        ranked = align_candidates(candidates, words, language, activity, load_forced(ws.forced_json), mix=mix)
+        ranked = align_candidates(candidates, words, language, activity, load_forced(ws.forced_json), mix=mix,
+                                  backing_activity=backing_activity)
         for candidate, alignment in ranked:
             log.info("%s: quality %.2f (%.0f%% heard, forced score %s, %d lines cut)", lyrics.describe(candidate),
                      alignment.quality, alignment.match_ratio * 100,
                      "–" if alignment.forced_score is None else f"{alignment.forced_score:.2f}", alignment.cut)
         chosen, alignment = ranked[0]
         # what's sung where the lyrics have nothing (a rap they left out), from what was heard there
-        lines = fill_unlyricked(alignment.lines, words, activity)
+        lead_words = [w for w in words if w.source != BACKING]  # what the lead sings that the lyrics lack
+        lines = fill_unlyricked(alignment.lines, lead_words, activity)
         if len(lines) > len(alignment.lines):
             log.info("%d lines added from the transcription where the lyrics have none", len(lines) - len(alignment.lines))
         sources = Counter(word.source for line in lines for word in line.words)
@@ -534,7 +596,7 @@ def _subtitles(job: Job, ctx: TaskContext) -> str:
             log.warning("the lyrics fit the audio poorly — they may belong to a different version of the song")
         description = lyrics.describe(chosen)
     else:
-        lines = lines_from_words(filter_heard(words, activity))
+        lines = lines_from_words(filter_heard([w for w in words if w.source != BACKING], activity))
         log.info("built %d lines from the transcription", len(lines))
         description = "whisperx transcription (lrclib miss)"
     if not lines:
