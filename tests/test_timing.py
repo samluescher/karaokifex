@@ -12,6 +12,7 @@ from karaokifex.timing import (
     filter_heard,
     forced_requests,
     lines_from_words,
+    merge_heard,
     normalize,
     plan_alignment,
     split_words,
@@ -189,6 +190,46 @@ def test_nothing_is_cut_when_no_heard_words_back_the_time_map(monkeypatch):
     monkeypatch.setattr("karaokifex.timing.xcorr_offset", lambda *args, **kwargs: 59.6)
     plan = plan_alignment(six_lines(), [], six_voiced())  # the prior maps every line onto silence
     assert not plan.cut
+
+
+BLOCK = ["red kite flies", "blue boat sails", "green tree grows"]
+
+
+def sung_lines(*lines: tuple[str, float]) -> tuple[list[TimedWord], Activity]:
+    """Each line's words heard 0.4 s apart from its start, and the lead voiced while they are sung."""
+    words = [TimedWord(word, start + 0.4 * k, start + 0.4 * k + 0.3, 0.9)
+             for text, start in lines for k, word in enumerate(text.split())]
+    return words, voice(60, *[(start, start + 0.4 * len(text.split())) for text, start in lines])
+
+
+def test_a_video_that_leaves_out_one_of_two_identical_blocks_is_followed_through_the_cut():
+    # lrclib (the album): the block twice, a chorus, the block again, an outro; the video sings the block
+    # once, the chorus, the block, and stops
+    texts = [*BLOCK, *BLOCK, "shout it out loud", *BLOCK, "fade away now", "fade away now"]
+    lines = [LyricLine(4.0 * i, text) for i, text in enumerate(texts)]
+    video = [(BLOCK[0], 5.0), (BLOCK[1], 9.0), (BLOCK[2], 13.0), ("shout it out loud", 17.0),
+             (BLOCK[0], 21.0), (BLOCK[1], 25.0), (BLOCK[2], 29.0)]
+    words, activity = sung_lines(*video)
+    result = align_lyrics(lines, words, activity=activity)
+    assert [line.text for line in result.lines] == [text for text, _ in video]
+    assert [line.start for line in result.lines] == pytest.approx([start for _, start in video], abs=0.05)
+    assert result.cut == 5
+
+
+def test_both_transcriptions_are_kept_but_a_word_heard_by_both_only_once():
+    prompted = heard(("echo", 1.0, 1.5), ("echo", 3.0, 3.5), ("river", 9.0, 9.5))
+    unprompted = heard(("echo", 1.05, 1.5), ("echoes", 3.1, 3.4), ("echo", 5.0, 5.5), ("ocean", 9.0, 9.4))
+    assert [(w.text, w.start) for w in merge_heard(prompted, unprompted)] == [
+        ("echo", 1.0), ("echo", 3.0), ("echo", 5.0), ("river", 9.0), ("ocean", 9.0)]
+
+
+def test_prompted_words_over_a_phrase_heard_otherwise_are_dropped():
+    # the prompted pass writes a lyric line where something else is sung; the unprompted pass hears that
+    prompted = heard(("under", 1.0, 1.2), ("my", 1.3, 1.4), ("bright", 1.5, 1.8), ("sky", 1.9, 2.2),
+                     ("red", 5.0, 5.2), ("kite", 5.3, 5.5), ("flies", 5.6, 5.9))
+    unprompted = heard(("round", 1.0, 1.2), ("the", 1.3, 1.4), ("old", 1.5, 1.8), ("well", 1.9, 2.2),
+                       ("red", 5.0, 5.2), ("kit", 5.3, 5.5), ("flies", 5.6, 5.9))
+    assert [w.text for w in merge_heard(prompted, unprompted)] == ["round", "the", "old", "well", "red", "kite", "flies"]
 
 
 def test_held_last_note_extends_the_line():

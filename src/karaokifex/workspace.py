@@ -95,6 +95,11 @@ class Workspace:
         return self.root / "transcript.json"
 
     @property
+    def transcript_noprompt_json(self) -> Path:
+        """Transcription of the lead vocals without the lyrics as prompt (merged into transcript.json)."""
+        return self.root / "transcript.noprompt.json"
+
+    @property
     def transcript_mix_json(self) -> Path:
         """Transcription of the full mix (--mix-vote)."""
         return self.root / "transcript_mix.json"

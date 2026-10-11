@@ -8,7 +8,8 @@
 
 One separation pass yields both stems the rest needs: the backing track (for
 render) and the lead vocals (for transcription, vocal activity and forced
-alignment). With --mix-vote, `transcribe_mix` also transcribes the full mix.
+alignment). `transcribe` listens twice, with and without the lyrics as prompt,
+and fills what the first pass missed from the second. With --mix-vote, `transcribe_mix` also transcribes the full mix.
 With --no-burn-lyrics, `render` doesn't wait for `subtitles`, which still writes
 the lyrics files. With --palette, `palette` samples frames of the extracted video
 for its dominant colours. With --describe, `describe` asks MusicBrainz about the
@@ -55,6 +56,7 @@ from karaokifex.timing import (
     forced_requests,
     kept_lines,
     lines_from_words,
+    merge_heard,
     plan_alignment,
 )
 from karaokifex.workspace import Workspace, partial_path
@@ -165,7 +167,7 @@ def build_tasks(job: Job) -> list[Task]:
         Task("vocal_activity", partial(_vocal_activity, job), deps=("separate_karaoke",),
              outputs=(ws.lead_activity,), description="when the lead vocals are audible"),
         Task("transcribe", partial(_transcribe, job), deps=("separate_karaoke", "load_whisper", "lyrics"),
-             outputs=(ws.transcript_json,), gpu=True, model=True, description="whisperx on the lead vocals"),
+             outputs=(ws.transcript_json,), gpu=True, model=True, description="whisperx on the lead vocals, with and without the lyrics as prompt"),
     ]
     if cfg.mix_vote:
         # Depends on transcribe so it can take over the loaded model instead of loading it twice.
@@ -430,8 +432,17 @@ def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target
     words, language = transcription.transcribe(model, audio, job.device,
                                                language=dialects.whisper_language(_song_language(job, candidates)),
                                                prompt=prompt, on_stage=ctx.note)
-    transcription.save_transcript(words, language, target)
     log.info("heard %d words in %s (language: %s)", len(words), audio.name, language)
+    if prompt and target == job.workspace.transcript_json:
+        # Prompted with the lyrics whisper hears their words better but skips repeats; a pass without the
+        # prompt fills the places the first heard nothing.
+        plain, _ = transcription.transcribe(model, audio, job.device, language=language, prompt=None,
+                                            on_stage=lambda stage: ctx.note(f"{stage} (no prompt)"))
+        transcription.save_transcript(plain, language, job.workspace.transcript_noprompt_json)
+        merged = merge_heard(words, plain)
+        log.info("%d more words heard without the lyrics as prompt", len(merged) - len(words))
+        words = merged
+    transcription.save_transcript(words, language, target)
     if swiss and not candidates and target == job.workspace.transcript_json:
         _swiss_german_lyrics(job, words)
 
