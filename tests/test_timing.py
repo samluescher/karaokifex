@@ -251,6 +251,22 @@ def test_backing_lines_are_placed_on_the_backing_vocals_and_lead_lines_keep_the_
     assert starts[2] == pytest.approx(18.0, abs=0.1)
 
 
+def test_unsure_words_a_long_pause_before_the_rest_of_their_line_are_timed_with_it():
+    lines = [LyricLine(10.0, "red kite flies"), LyricLine(14.0, "blue boat sails home")]
+    words = [TimedWord("red", 10.0, 10.3, 0.9), TimedWord("kite", 10.4, 10.7, 0.9), TimedWord("flies", 10.8, 11.1, 0.9),
+             TimedWord("blue", 11.3, 11.35, 0.0),  # squeezed in where whisper skipped
+             TimedWord("boat", 15.6, 15.9, 0.9), TimedWord("sails", 16.0, 16.3, 0.9), TimedWord("home", 16.4, 16.7, 0.9)]
+    result = align_lyrics(lines, words)
+    assert result.lines[1].start > 14.5
+
+
+def test_a_breath_inside_a_line_keeps_its_sure_words_where_they_are():
+    lines = [LyricLine(10.0, "red kite flies over the green hill")]
+    words = [TimedWord(w, s, s + 0.3, 0.9) for w, s in (("red", 10.0), ("kite", 10.4), ("flies", 10.8),
+                                                        ("over", 15.0), ("the", 15.4), ("green", 15.8), ("hill", 16.2))]
+    assert align_lyrics(lines, words).lines[0].start == pytest.approx(10.0)
+
+
 def test_held_last_note_extends_the_line():
     lines = [LyricLine(None, "one two"), LyricLine(None, "three")]
     words = heard(("one", 1.0, 1.3), ("two", 1.4, 1.7), ("three", 10.0, 10.5))

@@ -79,6 +79,8 @@ JUMP_COST = 3.0
 # it (at least DISAGREE_MIN of them) are dropped when less than AGREE_SHARE of them are in the phrase
 PHRASE_PAUSE, DISAGREE_MIN, AGREE_SHARE = 0.6, 3, 0.5
 PLACE_PAUSE = 2.5  # seconds between two heard words of a place that end it
+LINE_BREAK = 3.0  # seconds between a line's heard words that split them into groups (_cohere)...
+STRAY_SCORE = 0.3  # ...of which a smaller one with a word scored under this loses its times
 MIN_PLACED = 3  # fewer placed lines than this: the time map's anchors decide alone
 
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'"})
@@ -315,6 +317,7 @@ def plan_alignment(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activ
     times = _matched_times(tokens, heard, _match_pairs(tokens, heard, _line_windows(mapped), window, language,
                                                        skip=skip))
     _drop_non_monotonic(times)
+    _cohere(tokens, times)
 
     heard_lines = [any(times[k] is not None for k in indices) for indices in by_line]
     ends_before, starts_after = _neighbour_times(by_line, times)
@@ -798,6 +801,31 @@ def _matched_times(tokens: Sequence[_Token], heard: Sequence[TimedWord], matches
     return times
 
 
+def _cohere(tokens: Sequence[_Token], times: list[Times | None]) -> None:
+    """A line is sung in one go: where its heard words fall into groups apart by more than LINE_BREAK, a smaller
+    group holding a word whisper was unsure of (scored under STRAY_SCORE: squeezed in where it skipped, or taken
+    from a neighbouring line) loses its times, to be timed again with the rest of the line. A group of sure words
+    stays: a breath in the middle of a line, or a held note before the rest."""
+    for _, group in groupby(range(len(tokens)), key=lambda k: tokens[k].line):
+        timed = [k for k in group if times[k] is not None]
+        runs: list[list[int]] = []
+        for k in timed:
+            # start to start, less a word's longest natural length: a squeezed word's end is often stretched
+            if runs and times[k][0] - times[runs[-1][-1]][0] > LINE_BREAK + MAX_WORD:  # type: ignore[index]
+                runs.append([k])
+            elif runs:
+                runs[-1].append(k)
+            else:
+                runs.append([k])
+        if len(runs) > 1:
+            keep = max(runs, key=len)
+            for run in runs:
+                unsure = any(times[k][2] is not None and times[k][2] < STRAY_SCORE for k in run)  # type: ignore[index]
+                if run is not keep and unsure:
+                    for k in run:
+                        times[k] = None
+
+
 def _drop_non_monotonic(times: list[Times | None]) -> None:
     """Safety net in case whisperx reports words out of order."""
     last = -math.inf
@@ -839,6 +867,7 @@ def align_lyrics(lines: Sequence[LyricLine], heard: Sequence[TimedWord], *, plan
         times = _vote(times, _matched_times(tokens, mix, _match_pairs(tokens, mix, windows, window, language,
                                                                       skip=plan.cut)))
     _drop_non_monotonic(times)
+    _cohere(tokens, times)
     matched = sum(t is not None for t in times)
     sources = ["whisper" if t is not None else "" for t in times]
     forced_scores = _apply_better_sources(kept, tokens, times, sources, plan, forced, use_word_tags)
