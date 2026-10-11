@@ -12,7 +12,7 @@ alignment). `transcribe` listens twice, with and without the lyrics as prompt,
 and fills what the first pass missed from the second. With --mix-vote, `transcribe_mix` also transcribes the full mix.
 With --no-burn-lyrics, `render` doesn't wait for `subtitles`, which still writes
 the lyrics files. With --palette, `palette` samples frames of the extracted video
-for its dominant colours. With --describe, `describe` asks MusicBrainz about the
+for its dominant colours and how much its picture changes (motion). With --describe, `describe` asks MusicBrainz about the
 song (album, year, genres, writers, language) once the lyrics are in. With
 --quality, `quality` reads the download's streams and the renders' once they
 are made, before the download is deleted. With --keep-source, `original` puts the download's own
@@ -44,7 +44,7 @@ from karaokifex.gpu import free_gpu_memory
 from karaokifex.metadata import guess_artist_song, name_guesses, title_segments
 from karaokifex.models import Lyrics, TimedWord, VideoInfo
 from karaokifex import dialects, level, quality
-from karaokifex.palette import dominant_colors, without_bars
+from karaokifex.palette import dominant_colors, motion, without_bars
 from karaokifex.runner import RunReport, Task, TaskContext, TaskRunner, current_task
 from karaokifex.steps import download, lyrics, media, musicbrainz, separation, transcription
 from karaokifex.timing import (
@@ -329,10 +329,11 @@ def _palette(job: Job, ctx: TaskContext) -> None:
                                  duration=job.info.duration)
     if not len(frames):
         raise RuntimeError(f"no frame of {ws.video.name} could be decoded")
-    swatches = dominant_colors(without_bars(frames))
+    cropped = without_bars(frames)
+    swatches, change = dominant_colors(cropped), motion(cropped)
     _write_json(ws.metadata_json, {"palette": {"colors": [swatch.to_dict() for swatch in swatches],
-                                               "frames": len(frames)}})
-    log.info("dominant colours: %s", ", ".join(f"{swatch.hex} {swatch.weight:.0%}" for swatch in swatches))
+                                               "frames": len(frames), "motion": round(change, 3)}})
+    log.info("dominant colours: %s; motion %.1f", ", ".join(f"{swatch.hex} {swatch.weight:.0%}" for swatch in swatches), change)
 
 
 def _describe(job: Job, ctx: TaskContext) -> str:

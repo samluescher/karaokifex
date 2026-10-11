@@ -85,7 +85,7 @@ def test_palette_step_writes_the_dominant_colours(job, monkeypatch):
     monkeypatch.setattr(pipeline.media, "sample_frames", lambda video, **options: frames)
     pipeline._palette(job, ctx=Ctx())
     metadata = json.loads(job.workspace.metadata_json.read_text(encoding="utf-8"))
-    assert metadata["palette"] == {"frames": 4, "colors": [{"hex": "#0000ff", "rgb": [0, 0, 255], "weight": 0.6667},
+    assert metadata["palette"] == {"frames": 4, "motion": 0.0, "colors": [{"hex": "#0000ff", "rgb": [0, 0, 255], "weight": 0.6667},
                                                            {"hex": "#ff0000", "rgb": [255, 0, 0], "weight": 0.3333}]}
 
 

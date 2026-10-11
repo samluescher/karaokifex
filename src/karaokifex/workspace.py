@@ -144,7 +144,7 @@ class Workspace:
 
     @property
     def metadata_json(self) -> Path:
-        """What karaokifex finds out about the video itself (--palette: its dominant colours)."""
+        """What karaokifex finds out about the video itself (--palette: its dominant colours, how much it moves)."""
         return self.root / "metadata.json"
 
     @property
