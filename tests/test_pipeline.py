@@ -229,3 +229,26 @@ def test_separation_runs_each_model_and_resumes_after_the_last_one_done(job, mon
     pipeline._separate_karaoke(ensemble, type("Ctx", (), {"note": lambda self, text: None})())
     assert ran == ["a.ckpt", "c.ckpt"]
     assert job.workspace.karaoke_backing.exists() and job.workspace.karaoke_lead.exists()
+
+
+def test_a_song_made_again_from_its_kept_download_asks_the_site_nothing(tmp_path, monkeypatch):
+    folder = tmp_path / "Artist - Song"
+    folder.mkdir()
+    (folder / "info.json").write_text(json.dumps({"id": "abc123", "title": "Artist - Song", "duration": 200}), encoding="utf-8")
+    url = "https://www.youtube.com/watch?v=abc123"
+    config = Config(url=url, artist="Artist", song="Song", output_dir=tmp_path)
+    assert pipeline.kept_download(config) is None, "no download kept: the site is asked"
+    (folder / "source.mkv").write_bytes(b"video")
+    assert pipeline.kept_download(config).id == "abc123"
+    assert pipeline.kept_download(replace(config, url="https://www.youtube.com/watch?v=other")) is None, "another video"
+    assert pipeline.kept_download(replace(config, artist=None)) is None, "not named: not a remake"
+
+    def asked(*args, **kwargs):
+        raise AssertionError("the site was asked")
+
+    monkeypatch.setattr(pipeline.download, "download", asked)
+    job = pipeline.Job(config, Workspace(folder, "Artist - Song"), pipeline.kept_download(config), "Artist", "Song", "cpu", kept=True)
+    notes = []
+    ctx = type("Ctx", (), {"note": lambda self, n: notes.append(n), "progress": lambda self, f: None})()
+    pipeline._download(job, ctx)
+    assert notes == ["the kept download"]

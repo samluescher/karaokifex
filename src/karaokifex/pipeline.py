@@ -61,7 +61,7 @@ from karaokifex.timing import (
     merge_heard,
     plan_alignment,
 )
-from karaokifex.workspace import Workspace, partial_path
+from karaokifex.workspace import Workspace, partial_path, sanitize_name
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +79,7 @@ class Job:
     song: str
     device: str
     ffmpeg: media.FfmpegBinary = media.FfmpegBinary()
+    kept: bool = False  # made again from its kept download and details: YouTube not asked (kept_download)
 
     @property
     def title(self) -> str:
@@ -114,8 +115,12 @@ def prepare(config: Config) -> Job:
     """Probe the video and set up its working folder."""
     token = current_task.set("probe")
     try:
-        log.info("looking up %s", config.url)
-        info = download.probe(config.url, ffprobe=media.FfmpegBinary(config.ffmpeg or "ffmpeg").ffprobe)
+        info = kept_download(config)
+        if info:
+            log.info("made again from its kept download and details: %s not asked", config.url)
+        else:
+            log.info("looking up %s", config.url)
+            info = download.probe(config.url, ffprobe=media.FfmpegBinary(config.ffmpeg or "ffmpeg").ffprobe)
         artist, song = guess_artist_song(info, config.artist, config.song)
         if config.musicbrainz and not (config.artist and config.song):
             artist, song = canonical_names(info, config.artist, config.song, (artist, song))
@@ -126,9 +131,25 @@ def prepare(config: Config) -> Job:
         log.info("“%s” (%s) → %s – %s", info.title, _format_length(info.duration), artist, song)
         log.info("working folder: %s · device: %s", workspace.root, device)
         log.info("ffmpeg: %s · %s", ffmpeg.path, ffmpeg.describe())
-        return Job(config, workspace, info, artist, song, device, ffmpeg)
+        return Job(config, workspace, info, artist, song, device, ffmpeg, kept=bool(kept_download(config)))
     finally:
         current_task.reset(token)
+
+
+def kept_download(config: Config) -> VideoInfo | None:
+    """A song made again (-a and -s naming its folder) whose folder keeps the download of this very video
+    (--keep-download) and its details (info.json): those details, so neither the probe nor the download asks
+    the video's site again. None for anything else."""
+    if not (config.artist and config.song):
+        return None
+    root = config.output_dir / sanitize_name(f"{config.artist} - {config.song}")
+    try:
+        data = json.loads((root / "info.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not (root / "source.mkv").exists() or not data.get("id") or str(data["id"]) not in config.url:
+        return None
+    return VideoInfo.from_dict(data)
 
 
 def canonical_names(info: VideoInfo, artist: str | None, song: str | None, guess: tuple[str, str],
@@ -307,6 +328,9 @@ def _download(job: Job, ctx: TaskContext) -> None:
         ctx.progress(fraction)
         ctx.note(note)
 
+    if job.kept and job.workspace.source.exists():
+        ctx.note("the kept download")  # made again from it (kept_download): the site not asked
+        return
     download.download(job.config.url, job.workspace.source, on_progress, prefer_h264=job.config.browser_friendly,
                       ffmpeg_path=job.ffmpeg.path)
     log.info("downloaded %s (%.0f MiB)", job.workspace.source.name, job.workspace.source.stat().st_size / 1_048_576)
