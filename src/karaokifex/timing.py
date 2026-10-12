@@ -37,6 +37,7 @@ from itertools import groupby
 from typing import TYPE_CHECKING, Any, Sequence
 
 import jellyfish
+import numpy as np
 
 from karaokifex.mapping import MIN_OFFSET_SAMPLES, TimeMap, fit_time_map, xcorr_offset
 from karaokifex.models import LyricLine, TimedLine, TimedWord
@@ -707,6 +708,119 @@ def _weight(word: TimedWord) -> float:
     return 1.0 if word.score is None else 0.5 + 0.5 * min(max(word.score, 0.0), 1.0)
 
 
+def _canon(word: str) -> str:
+    """A word as _similarity compares it: apostrophes out, a spelling that differs between lyric sites folded."""
+    word = word.replace("'", "")
+    return _EQUIVALENTS.get(word, word)
+
+
+class _Similar:
+    """Which heard words (and pairs of neighbouring heard words) a lyric word (or pair) can match, and how well.
+
+    The same scores as _similarity, but asked only of the spellings that can reach the needed ratio or that sound
+    alike, and once per spelling rather than once per heard word: a long film has some 17 000 words each side, and a
+    few thousand spellings. A ratio is at most 2·(letters in common)/(len + len) (difflib's quick_ratio), which numpy
+    works out for every spelling at once from their letter counts.
+    """
+
+    def __init__(self, heard_norm: Sequence[str], phonetic: bool):
+        self.phonetic = phonetic
+        vocab: dict[str, int] = {}
+        self.ids = np.fromiter((vocab.setdefault(h, len(vocab)) for h in heard_norm), dtype=np.int64, count=len(heard_norm))
+        self.vocab = list(vocab)
+        self.words = self._index(self.vocab)
+        # each heard word with the one after it, by where the pair starts
+        self.pair_at: dict[str, list[int]] = {}
+        for k in range(len(heard_norm) - 1):
+            if heard_norm[k]:                                 # the pair's first letter is its first word's
+                self.pair_at.setdefault(heard_norm[k] + heard_norm[k + 1], []).append(k)
+        self.pairs = self._index(list(self.pair_at))
+        self._single: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._merged: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._split: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+    def _index(self, words: Sequence[str]) -> dict[str, Any]:
+        """Spellings' letter counts, lengths and first letters, and by sound, as numbers into `words`."""
+        canons = [_canon(word) for word in words]
+        letters = sorted({c for canon in canons for c in canon})
+        at = {c: n for n, c in enumerate(letters)}
+        counts = np.zeros((len(words), max(1, len(letters))), dtype=np.int32)
+        for n, canon in enumerate(canons):
+            for c in canon:
+                counts[n, at[c]] += 1
+        by_sound: dict[str, list[int]] = {}
+        for n, canon in enumerate(canons):
+            if self.phonetic and (code := _phonetic_code(canon)):
+                by_sound.setdefault(code, []).append(n)
+        return {"words": words, "at": at, "counts": counts, "lengths": np.array([len(c) for c in canons]),
+                "first": np.array([word[:1] for word in words], dtype=object), "sound": by_sound}
+
+    def _candidates(self, index: dict[str, Any], word: str, least: float, first: bool) -> list[int]:
+        """The spellings `word` may reach the ratio `least` with, or that sound like it; only those starting alike if
+        `first`."""
+        canon = _canon(word)
+        query = np.zeros(index["counts"].shape[1], dtype=np.int32)
+        for c in canon:
+            if (n := index["at"].get(c)) is not None:
+                query[n] += 1
+        common = np.minimum(index["counts"], query).sum(axis=1)
+        total = index["lengths"] + len(canon)
+        # 2·common/total, as difflib works it out; both empty is a ratio of 1
+        bound = np.where(total > 0, 2.0 * common / np.maximum(total, 1), 1.0)
+        ok = bound >= least - 1e-9
+        if self.phonetic and (code := _phonetic_code(canon)):
+            sounds = index["sound"].get(code, [])
+            ok[sounds] = True
+        if first:
+            ok &= index["first"] == word[:1]
+        return np.flatnonzero(ok).tolist()
+
+    def _scored(self, index: dict[str, Any], word: str, ratio: float, keep: float, first: bool
+                ) -> tuple[np.ndarray, np.ndarray]:
+        """The spellings `word` (a lyric word or two) scores more than 0 and at least `keep` with, and the scores;
+        only those whose ratio can reach `ratio` or that sound alike are asked."""
+        numbers, scores = [], []
+        for n in set(self._candidates(index, word, ratio, first)):
+            score = _similarity(word, index["words"][n], self.phonetic)
+            if score > 0 and score >= keep:
+                numbers.append(n)
+                scores.append(score)
+        return np.array(numbers, dtype=np.int64), np.array(scores, dtype=np.float64)
+
+    def single(self, lyric: str) -> np.ndarray:
+        """Per heard word: how well `lyric` matches it (0 where it can't)."""
+        if lyric not in self._single:
+            self._single[lyric] = self._scored(self.words, lyric, FUZZY_RATIO, 0.0, False)
+        numbers, scores = self._single[lyric]
+        per_spelling = np.zeros(len(self.vocab))
+        per_spelling[numbers] = scores
+        return per_spelling[self.ids]
+
+    def merged(self, lyric: str, size: int) -> np.ndarray:
+        """Per column j (heard words j-2 and j-1 together): how well `lyric` matches the two, at least MERGE_MIN."""
+        if lyric not in self._merged:
+            numbers, scores = self._scored(self.pairs, lyric, MERGE_MIN, MERGE_MIN, True)
+            at, of = [], []
+            for n, score in zip(numbers.tolist(), scores.tolist()):
+                for k in self.pair_at[self.pairs["words"][n]]:
+                    at.append(k + 2)
+                    of.append(score)
+            self._merged[lyric] = (np.array(at, dtype=np.int64), np.array(of, dtype=np.float64))
+        at, of = self._merged[lyric]
+        out = np.zeros(size)
+        out[at] = of
+        return out
+
+    def split(self, lyric_pair: str) -> np.ndarray:
+        """Per heard word: how well two lyric words together (`lyric_pair`) match it, at least MERGE_MIN."""
+        if lyric_pair not in self._split:
+            self._split[lyric_pair] = self._scored(self.words, lyric_pair, MERGE_MIN, MERGE_MIN, True)
+        numbers, scores = self._split[lyric_pair]
+        per_spelling = np.zeros(len(self.vocab))
+        per_spelling[numbers] = scores
+        return per_spelling[self.ids]
+
+
 def _match_pairs(tokens: Sequence[_Token], heard: Sequence[TimedWord], windows: Sequence[Window | None],
                  slack: float, language: str | None = None, *, skip: frozenset[int] = frozenset()
                  ) -> list[_Match]:
@@ -717,58 +831,79 @@ def _match_pairs(tokens: Sequence[_Token], heard: Sequence[TimedWord], windows: 
     heard word lies within its lyric line's window (± slack); the lines in `skip` (cut) pair with nothing; a word
     heard in the backing vocals counts in full for a lyric word in parentheses, at BACKING_FOR_LEAD for another
     (lyric sites leave many a backing part unmarked, and the backing echoes the lead).
+
+    A row at a time with numpy: a cell's pairings read only the rows above it, so a row is its pairings, then a
+    running maximum with "skip a heard word". The scores are the same, cell for cell, as working through the cells
+    one by one; a row costs a few array operations, and only three rows of scores are kept, with a byte per cell for
+    the way back. An 84-minute film (17 000 words each side) takes seconds and some 300 MB, not hours and 30 GB.
     """
-    phonetic = language == "en"
-    heard_norm = [normalize(word.text) for word in heard]
-    weights = [_weight(word) for word in heard]
-    backing = [word.source == BACKING for word in heard]  # heard in the backing vocals: for backing words only
     rows, columns = len(tokens) + 1, len(heard) + 1
-    score = [[0.0] * columns for _ in range(rows)]
-    move = [bytearray(columns) for _ in range(rows)]  # 0 skip lyric, 1 skip heard, 2 = 1:1, 3 = 1:2, 4 = 2:1
-    bounds = []
-    for token in tokens:
-        window = windows[token.line]
-        if token.line in skip:
-            bounds.append((math.inf, -math.inf))
-        else:
-            bounds.append((window[0] - slack, window[1] + slack) if window else (-math.inf, math.inf))
+    if len(tokens) == 0 or len(heard) == 0:
+        return []
+    heard_norm = [normalize(word.text) for word in heard]
+    similar = _Similar(heard_norm, language == "en")
+    weights = np.array([_weight(word) for word in heard])
+    backing = np.array([word.source == BACKING for word in heard])
+    # a heard word's weight for a lyric word in parentheses (as it is) and for one outside (a backing word counts less)
+    for_backing = np.concatenate(([0.0], weights))
+    for_lead = np.concatenate(([0.0], weights * np.where(backing, BACKING_FOR_LEAD, 1.0)))
+    starts = np.concatenate(([np.nan], np.array([word.start for word in heard])))
+    first = np.array([""] + [h[:1] for h in heard_norm], dtype=object)
+    no = np.full(columns, -np.inf)
+    move = np.zeros((rows, columns), dtype=np.uint8)  # 0 skip lyric, 1 skip heard, 2 = 1:1, 3 = 1:2, 4 = 2:1
+    before, previous = np.zeros(columns), np.zeros(columns)
 
     for i in range(1, rows):
         token = tokens[i - 1]
-        low, high = bounds[i - 1]
-        previous, row, moves = score[i - 1], score[i], move[i]
-        before = score[i - 2] if i >= 2 else None
-        pair_ok = before is not None and tokens[i - 2].line == token.line
-        for j in range(1, columns):
-            if previous[j] >= row[j - 1]:
-                best, how = previous[j], 0
-            else:
-                best, how = row[j - 1], 1
-            start = heard[j - 1].start
-            if low <= start <= high:
-                # a word heard in the backing vocals counts for a lyric word outside parentheses at a part only
-                w1 = weights[j - 1] * (BACKING_FOR_LEAD if backing[j - 1] and not token.backing else 1.0)
-                similarity = _similarity(token.norm, heard_norm[j - 1], phonetic)
-                if similarity and previous[j - 1] + similarity * w1 > best:
-                    best, how = previous[j - 1] + similarity * w1, 2
-                if j >= 2 and token.norm[:1] == heard_norm[j - 2][:1] and low <= heard[j - 2].start:
-                    w2 = weights[j - 2] * (BACKING_FOR_LEAD if backing[j - 2] and not token.backing else 1.0)
-                    similarity = _similarity(token.norm, heard_norm[j - 2] + heard_norm[j - 1], phonetic)
-                    gain = similarity * (w2 + w1) / 2
-                    if similarity >= MERGE_MIN and previous[j - 2] + gain > best:
-                        best, how = previous[j - 2] + gain, 3
-                if pair_ok and tokens[i - 2].norm[:1] == heard_norm[j - 1][:1]:
-                    w0 = weights[j - 1] * (BACKING_FOR_LEAD if backing[j - 1] and not tokens[i - 2].backing else 1.0)
-                    similarity = _similarity(tokens[i - 2].norm + token.norm, heard_norm[j - 1], phonetic)
-                    gain = similarity * min(w0, w1) * 1.5  # two lyric words explained by one heard word
-                    if similarity >= MERGE_MIN and before[j - 1] + gain > best:  # type: ignore[index]
-                        best, how = before[j - 1] + gain, 4  # type: ignore[index]
-            row[j], moves[j] = best, how
+        window = windows[token.line]
+        if token.line in skip:
+            low, high = math.inf, -math.inf
+        else:
+            low, high = (window[0] - slack, window[1] + slack) if window else (-math.inf, math.inf)
+        inside = (starts >= low) & (starts <= high)       # column j: heard word j-1 in the window (never column 0)
+        w1 = for_backing if token.backing else for_lead
+        candidates = []
+        if inside.any():
+            one = np.concatenate(([0.0], similar.single(token.norm)))
+            c2 = no.copy()
+            c2[1:] = previous[:-1] + one[1:] * w1[1:]
+            candidates.append((np.where(inside & (one > 0), c2, -np.inf), 2))
+            two = similar.merged(token.norm, columns)       # heard words j-2 and j-1 as this one lyric word
+            if two.any():
+                c3 = no.copy()
+                c3[2:] = previous[:-2] + two[2:] * (w1[1:-1] + w1[2:]) / 2
+                ok = np.zeros(columns, dtype=bool)
+                ok[2:] = starts[1:-1] >= low
+                candidates.append((np.where(inside & ok & (two >= MERGE_MIN), c3, -np.inf), 3))
+            if i >= 2 and tokens[i - 2].line == token.line:
+                w0 = for_backing if tokens[i - 2].backing else for_lead
+                pair = np.concatenate(([0.0], similar.split(tokens[i - 2].norm + token.norm)))
+                if pair.any():
+                    c4 = no.copy()
+                    c4[1:] = before[:-1] + pair[1:] * np.minimum(w0[1:], w1[1:]) * 1.5
+                    starts_alike = first == tokens[i - 2].norm[:1]
+                    candidates.append((np.where(inside & starts_alike & (pair >= MERGE_MIN), c4, -np.inf), 4))
+        best = previous.copy()
+        for value, _ in candidates:
+            best = np.maximum(best, value)
+        best[0] = 0.0
+        row = np.maximum.accumulate(best)
+        # how each cell was reached, ties broken as the cell-by-cell programme does: a skip first, then 2, 3, 4
+        left = np.concatenate(([0.0], row[:-1]))
+        so_far = np.maximum(previous, left)
+        how = np.where(previous >= left, 0, 1).astype(np.uint8)
+        for value, kind in candidates:
+            better = value > so_far
+            so_far = np.where(better, value, so_far)
+            how[better] = kind
+        how[0] = 0
+        move[i] = how
+        before, previous = previous, row
 
     matches: list[_Match] = []
     i, j = rows - 1, columns - 1
     while i > 0 and j > 0:
-        how = move[i][j]
+        how = move[i, j]
         if how == 0:
             i -= 1
         elif how == 1:
