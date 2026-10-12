@@ -167,3 +167,30 @@ def test_invalid_graphs_are_rejected():
         TaskRunner([Task("a", noop, deps=("b",)), Task("b", noop, deps=("a",))])
     with pytest.raises(ValueError, match="Duplicate"):
         TaskRunner([Task("a", noop), Task("a", noop)])
+
+
+def test_a_run_waiting_for_the_shared_gpu_says_so(tmp_path, caplog, monkeypatch):
+    import logging
+    import threading
+
+    from karaokifex import gpu
+
+    monkeypatch.setattr(gpu, "WAIT_SAY", 0.5)
+    lock = tmp_path / "gpu.lock"
+    held, release = threading.Event(), threading.Event()
+
+    def other_run():
+        with gpu.SharedGpu(lock):
+            held.set()
+            release.wait(10)
+
+    t = threading.Thread(target=other_run)
+    t.start()
+    held.wait(5)
+    threading.Timer(2.5, release.set).start()
+    with caplog.at_level(logging.INFO, logger="karaokifex.gpu"):
+        with gpu.SharedGpu(lock):
+            pass
+    t.join()
+    said = [r.getMessage() for r in caplog.records if "waiting for the GPU" in r.getMessage()]
+    assert len(said) >= 2, said
