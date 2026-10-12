@@ -89,6 +89,22 @@ def karaoke_text(line: TimedLine, shown_at: float, *, debug: bool = False) -> st
     return "".join(parts)
 
 
+def backing_over(line: TimedLine) -> tuple[TimedLine, TimedLine] | None:
+    """A line whose backing part (its words in parentheses, after the lead's) starts before the lead's last word ends:
+    the lead's words and the backing's, apart, to be shown as two events -- one sweep would crush the backing's words
+    into the moment after the lead's. None for any other line."""
+    lead, back, depth = [], [], 0
+    for word in line.words:
+        if "(" in word.text:
+            depth = 1
+        (back if depth else lead).append(word)
+        if ")" in word.text:
+            depth = 0
+    if not lead or not back or back[0].start >= lead[-1].end - 0.05:
+        return None
+    return TimedLine(tuple(lead)), TimedLine(tuple(back))
+
+
 def display_windows(lines: Sequence[TimedLine]) -> list[tuple[float, float]]:
     """When each line appears and disappears.
 
@@ -118,10 +134,10 @@ def build_ass(lines: Sequence[TimedLine], *, width: int, height: int, title: str
     margin_upper = margin_lower + round(size * 1.45)
     margin_side = round(width * 0.04)
 
-    def style_line(name: str, font_size: int, alignment: int, margin_v: int) -> str:
+    def style_line(name: str, font_size: int, alignment: int, margin_v: int, italic: bool = False) -> str:
         return (
             f"Style: {name},{style.font},{font_size},{style.sung_colour},{style.unsung_colour},"
-            f"{style.outline_colour},{style.shadow_colour},-1,0,0,0,100,100,0,0,1,{outline},{shadow},"
+            f"{style.outline_colour},{style.shadow_colour},-1,{-1 if italic else 0},0,0,100,100,0,0,1,{outline},{shadow},"
             f"{alignment},{margin_side},{margin_side},{margin_v},1"
         )
 
@@ -145,6 +161,8 @@ def build_ass(lines: Sequence[TimedLine], *, width: int, height: int, title: str
         style_line("Upper", size, 2, margin_upper),
         style_line("Lower", size, 2, margin_lower),
         style_line("Title", round(size * 1.2), 5, 0),
+        # a line's backing part sung over the lead: smaller, in italics, at the top (backing_over)
+        style_line("Backing", round(size * 0.8), 8, margin_lower, italic=True),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -157,6 +175,10 @@ def build_ass(lines: Sequence[TimedLine], *, width: int, height: int, title: str
                                "{\\fad(300,300)}" + escape_text(title)))
     for index, (line, (shown, hidden)) in enumerate(zip(lines, windows)):
         slot = "Upper" if index % 2 == 0 else "Lower"
+        if (over := backing_over(line)) is not None:
+            line, back = over
+            at = max(0.0, back.start - LEAD_IN / 2)
+            events.append(dialogue(at, back.end + LINGER, "Backing", "{\\fad(150,200)}" + karaoke_text(back, at, debug=debug)))
         events.append(dialogue(shown, hidden, slot, "{\\fad(150,200)}" + karaoke_text(line, shown, debug=debug)))
     if debug and lines:
         header.insert(header.index("[Events]") - 1, style_line("Legend", round(size * 0.45), 7, margin_side))

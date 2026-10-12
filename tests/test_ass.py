@@ -58,3 +58,15 @@ def test_build_ass_structure():
     assert "PlayResX: 1280" in ass and "PlayResY: 720" in ass
     dialogues = [row for row in ass.splitlines() if row.startswith("Dialogue:")]
     assert [row.split(",")[3] for row in dialogues] == ["Title", "Upper", "Lower", "Upper"]
+
+
+def test_a_backing_part_sung_over_the_lead_is_an_event_of_its_own():
+    from karaokifex.ass import backing_over
+    words = [TimedWord("one", 1.0, 1.4), TimedWord("two", 1.5, 4.0), TimedWord("(three", 2.5, 2.8), TimedWord("four)", 2.9, 3.4)]
+    lead, back = backing_over(TimedLine(tuple(words)))
+    assert [w.text for w in lead.words] == ["one", "two"] and [w.text for w in back.words] == ["(three", "four)"]
+    text = build_ass([TimedLine(tuple(words))], width=1280, height=720)
+    assert "Style: Backing" in text
+    assert sum(line.startswith("Dialogue") for line in text.splitlines()) == 2
+    after = [TimedWord("one", 1.0, 1.4), TimedWord("two", 1.5, 2.0), TimedWord("(three", 2.5, 2.8), TimedWord("four)", 2.9, 3.4)]
+    assert backing_over(TimedLine(tuple(after))) is None

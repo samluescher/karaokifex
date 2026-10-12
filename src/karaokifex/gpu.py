@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import gc
+import logging
 import sys
+import time
 from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+WAIT_SAY = 5 * 60  # seconds between "waiting for the GPU" lines while another run holds it
 
 
 def free_gpu_memory() -> None:
@@ -33,19 +39,33 @@ class SharedGpu:
     def __enter__(self) -> SharedGpu:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self.path, "a+b")
+        began, said = time.monotonic(), None
+        while not self._try():
+            # said as it starts waiting and every WAIT_SAY after, so whoever watches the output for a run gone quiet
+            # (Karaokino's batch stops one that is quiet and idle) sees a run waiting its turn, not one stuck
+            waited = time.monotonic() - began
+            if said is None or waited - said >= WAIT_SAY:
+                log.info("waiting for the GPU: another run is using it (%.0f min so far)", waited / 60)
+                said = waited
+        return self
+
+    def _try(self) -> bool:
+        """The lock taken, or False after a while without it (Windows: 10 s; elsewhere a second)"""
         if sys.platform == "win32":
             import msvcrt
             self._file.seek(0)
-            while True:
-                try:
-                    msvcrt.locking(self._file.fileno(), msvcrt.LK_LOCK, 1)  # gives up after 10 s: try again
-                    break
-                except OSError:
-                    continue
-        else:
-            import fcntl
-            fcntl.flock(self._file, fcntl.LOCK_EX)
-        return self
+            try:
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_LOCK, 1)  # gives up after 10 s
+                return True
+            except OSError:
+                return False
+        import fcntl
+        try:
+            fcntl.flock(self._file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            time.sleep(1)
+            return False
 
     def __exit__(self, *_exc: object) -> None:
         if sys.platform == "win32":

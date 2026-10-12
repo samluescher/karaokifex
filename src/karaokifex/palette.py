@@ -1,4 +1,5 @@
-"""The dominant colours of a video: k-means over the pixels of frames sampled across it (pure numpy)."""
+"""The dominant colours of a video: k-means over the pixels of frames sampled across it (pure numpy); and how much its
+picture changes from one sampled frame to the next (motion), near nothing for a still picture put to the song."""
 
 from __future__ import annotations
 
@@ -60,6 +61,16 @@ def dominant_colors(frames: np.ndarray, count: int = PALETTE_SIZE) -> list[Swatc
     order = np.argsort(-weights, kind="stable")
     return [Swatch(tuple(int(v) for v in np.clip(np.rint(centers[k]), 0, 255)), float(weights[k]))  # type: ignore[arg-type]
             for k in order if weights[k] > 0]
+
+
+def motion(frames: np.ndarray) -> float:
+    """How much the picture changes between consecutive `frames` (frames, height, width, 3): the mean absolute
+    difference of their pixels, 0 (one picture throughout) to 255. 0 for fewer than two frames.
+    """
+    frames = np.asarray(frames, dtype=np.float64)
+    if len(frames) < 2:
+        return 0.0
+    return float(np.abs(np.diff(frames, axis=0)).mean())
 
 
 def _nearest(pixels: np.ndarray, centers: np.ndarray) -> np.ndarray:

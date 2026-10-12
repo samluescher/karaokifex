@@ -95,6 +95,30 @@ class Workspace:
         return self.root / "transcript.json"
 
     @property
+    def transcript_noprompt_json(self) -> Path:
+        """Transcription of the lead vocals without the lyrics as prompt (merged into transcript.json)."""
+        return self.root / "transcript.noprompt.json"
+
+    @property
+    def backing_vocals(self) -> Path:
+        """The backing vocals: the vocals of the karaoke backing (--backing-vocals)."""
+        return self.stems_dir / "backing_vocals.wav"
+
+    @property
+    def backing_activity(self) -> Path:
+        """When the backing vocals are audible (--backing-vocals)."""
+        return self.stems_dir / "backing_activity.npz"
+
+    @property
+    def transcript_backing_json(self) -> Path:
+        """Transcription of the backing vocals, both passes merged as for the lead (--backing-vocals)."""
+        return self.root / "transcript.backing.json"
+
+    @property
+    def transcript_backing_noprompt_json(self) -> Path:
+        return self.root / "transcript.backing.noprompt.json"
+
+    @property
     def transcript_mix_json(self) -> Path:
         """Transcription of the full mix (--mix-vote)."""
         return self.root / "transcript_mix.json"
@@ -120,7 +144,7 @@ class Workspace:
 
     @property
     def metadata_json(self) -> Path:
-        """What karaokifex finds out about the video itself (--palette: its dominant colours)."""
+        """What karaokifex finds out about the video itself (--palette: its dominant colours, how much it moves)."""
         return self.root / "metadata.json"
 
     @property
@@ -155,13 +179,13 @@ class Workspace:
     def artifacts(self) -> frozenset[Path]:
         """Files worth keeping after a successful run — including videos rendered by earlier runs.
 
-        Besides the videos and the karaoke audio, that is the data describing them: the lyrics,
+        Besides the videos and the karaoke audio (and the backing vocals, --backing-vocals), that is the data describing them: the lyrics,
         their word timings and the video's metadata. The download itself is temporary; the
         original survives as `original_video` (--keep-source).
         """
         videos = (self.final_video, self.debug_video, self.plain_video, self.original_video)
         earlier_renders = [path for video in videos for path in self.root.glob(f"{glob.escape(video.stem)}.*")]
-        keep = {self.final_video, self.subtitles, self.karaoke_backing, self.lyrics_json, self.timings_json, self.swiss_lyrics,
+        keep = {self.final_video, self.subtitles, self.karaoke_backing, self.backing_vocals, self.lyrics_json, self.timings_json, self.swiss_lyrics,
                 self.info_json, self.metadata_json, self.song_json, self.quality_json,
                 self.root / "tab-source.json", self.root / "tab-check.json"}
         return frozenset(keep | {p for p in earlier_renders if ".partial." not in p.name})

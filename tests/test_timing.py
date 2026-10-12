@@ -8,10 +8,12 @@ from karaokifex.timing import (
     AlignmentPlan,
     _similarity,
     align_lyrics,
+    backing_heard,
     fill_unlyricked,
     filter_heard,
     forced_requests,
     lines_from_words,
+    merge_heard,
     normalize,
     plan_alignment,
     split_words,
@@ -191,6 +193,80 @@ def test_nothing_is_cut_when_no_heard_words_back_the_time_map(monkeypatch):
     assert not plan.cut
 
 
+BLOCK = ["red kite flies", "blue boat sails", "green tree grows"]
+
+
+def sung_lines(*lines: tuple[str, float]) -> tuple[list[TimedWord], Activity]:
+    """Each line's words heard 0.4 s apart from its start, and the lead voiced while they are sung."""
+    words = [TimedWord(word, start + 0.4 * k, start + 0.4 * k + 0.3, 0.9)
+             for text, start in lines for k, word in enumerate(text.split())]
+    return words, voice(60, *[(start, start + 0.4 * len(text.split())) for text, start in lines])
+
+
+def test_a_video_that_leaves_out_one_of_two_identical_blocks_is_followed_through_the_cut():
+    # lrclib (the album): the block twice, a chorus, the block again, an outro; the video sings the block
+    # once, the chorus, the block, and stops
+    texts = [*BLOCK, *BLOCK, "shout it out loud", *BLOCK, "fade away now", "fade away now"]
+    lines = [LyricLine(4.0 * i, text) for i, text in enumerate(texts)]
+    video = [(BLOCK[0], 5.0), (BLOCK[1], 9.0), (BLOCK[2], 13.0), ("shout it out loud", 17.0),
+             (BLOCK[0], 21.0), (BLOCK[1], 25.0), (BLOCK[2], 29.0)]
+    words, activity = sung_lines(*video)
+    result = align_lyrics(lines, words, activity=activity)
+    assert [line.text for line in result.lines] == [text for text, _ in video]
+    assert [line.start for line in result.lines] == pytest.approx([start for _, start in video], abs=0.05)
+    assert result.cut == 5
+
+
+def test_both_transcriptions_are_kept_but_a_word_heard_by_both_only_once():
+    prompted = heard(("echo", 1.0, 1.5), ("echo", 3.0, 3.5), ("river", 9.0, 9.5))
+    unprompted = heard(("echo", 1.05, 1.5), ("echoes", 3.1, 3.4), ("echo", 5.0, 5.5), ("ocean", 9.0, 9.4))
+    assert [(w.text, w.start) for w in merge_heard(prompted, unprompted)] == [
+        ("echo", 1.0), ("echo", 3.0), ("echo", 5.0), ("river", 9.0), ("ocean", 9.0)]
+
+
+def test_prompted_words_over_a_phrase_heard_otherwise_are_dropped():
+    # the prompted pass writes a lyric line where something else is sung; the unprompted pass hears that
+    prompted = heard(("under", 1.0, 1.2), ("my", 1.3, 1.4), ("bright", 1.5, 1.8), ("sky", 1.9, 2.2),
+                     ("red", 5.0, 5.2), ("kite", 5.3, 5.5), ("flies", 5.6, 5.9))
+    unprompted = heard(("round", 1.0, 1.2), ("the", 1.3, 1.4), ("old", 1.5, 1.8), ("well", 1.9, 2.2),
+                       ("red", 5.0, 5.2), ("kit", 5.3, 5.5), ("flies", 5.6, 5.9))
+    assert [w.text for w in merge_heard(prompted, unprompted)] == ["round", "the", "old", "well", "red", "kite", "flies"]
+
+
+def test_backing_lines_are_placed_on_the_backing_vocals_and_lead_lines_keep_the_lead():
+    lines = [LyricLine(10.0, "red kite flies"), LyricLine(14.0, "(over the hill)"), LyricLine(18.0, "blue boat sails")]
+    lead = heard(("red", 10.0, 10.3), ("kite", 10.4, 10.7), ("flies", 10.8, 11.1),
+                 ("blue", 18.0, 18.3), ("boat", 18.4, 18.7), ("sails", 18.8, 19.1))
+    lead_voice = voice(30, (10.0, 11.2), (18.0, 19.2))
+    # the backing sings its line late, at 15.5, and echoes the lead's "blue boat sails" at 20
+    backing_voice = voice(30, (15.5, 16.8), (20.0, 21.2))
+    backing = backing_heard(heard(("over", 15.5, 15.8), ("the", 15.9, 16.1), ("hill", 16.2, 16.6),
+                                  ("blue", 20.0, 20.3), ("boat", 20.4, 20.7), ("sails", 20.8, 21.1),
+                                  ("noise", 25.0, 25.3)), backing_voice)  # "noise" sung nowhere: filtered out
+    assert [w.text for w in backing][-1] == "sails"
+    result = align_lyrics(lines, sorted([*lead, *backing], key=lambda w: w.start), activity=lead_voice,
+                          backing_activity=backing_voice)
+    starts = [line.start for line in result.lines]
+    assert starts[1] == pytest.approx(15.5, abs=0.1)
+    assert starts[2] == pytest.approx(18.0, abs=0.1)
+
+
+def test_unsure_words_a_long_pause_before_the_rest_of_their_line_are_timed_with_it():
+    lines = [LyricLine(10.0, "red kite flies"), LyricLine(14.0, "blue boat sails home")]
+    words = [TimedWord("red", 10.0, 10.3, 0.9), TimedWord("kite", 10.4, 10.7, 0.9), TimedWord("flies", 10.8, 11.1, 0.9),
+             TimedWord("blue", 11.3, 11.35, 0.0),  # squeezed in where whisper skipped
+             TimedWord("boat", 15.6, 15.9, 0.9), TimedWord("sails", 16.0, 16.3, 0.9), TimedWord("home", 16.4, 16.7, 0.9)]
+    result = align_lyrics(lines, words)
+    assert result.lines[1].start > 14.5
+
+
+def test_a_breath_inside_a_line_keeps_its_sure_words_where_they_are():
+    lines = [LyricLine(10.0, "red kite flies over the green hill")]
+    words = [TimedWord(w, s, s + 0.3, 0.9) for w, s in (("red", 10.0), ("kite", 10.4), ("flies", 10.8),
+                                                        ("over", 15.0), ("the", 15.4), ("green", 15.8), ("hill", 16.2))]
+    assert align_lyrics(lines, words).lines[0].start == pytest.approx(10.0)
+
+
 def test_held_last_note_extends_the_line():
     lines = [LyricLine(None, "one two"), LyricLine(None, "three")]
     words = heard(("one", 1.0, 1.3), ("two", 1.4, 1.7), ("three", 10.0, 10.5))
@@ -250,9 +326,9 @@ def test_plan_roundtrip_and_forced_requests():
     plan = plan_alignment(lines, words)
     assert AlignmentPlan.from_dict(plan.to_dict()) == plan
     requests = forced_requests(lines, plan)
-    assert [index for index, _, _ in requests] == [0, 2]  # line 1 has word tags
-    assert requests[0][1] == ["one", "two"]
-    low, high = requests[0][2]
+    assert [index for index, _, _, _ in requests] == [0, 2]  # line 1 has word tags
+    assert requests[0][1:3] == ((0, 1), ["one", "two"])
+    low, high = requests[0][3]
     assert low <= 10.1 and high >= 11.0
 
 
@@ -292,3 +368,36 @@ def test_no_fill_in_short_gaps_silence_or_for_a_few_words():
 def test_words_heard_inside_a_lyric_line_are_not_added_again():
     lines = lines_at(("long line", 2.0, 12.0))
     assert fill_unlyricked(lines, rap(3.0, 12), voice(15.0, (2.0, 12.0))) == lines
+
+
+def test_forced_requests_split_a_line_s_backing_part():
+    lines = [LyricLine(10.0, "one two (three four)"), LyricLine(20.0, "(five six)"), LyricLine(30.0, "seven eight")]
+    words = heard(("one", 10.1, 10.5), ("two", 10.6, 11.0), ("seven", 30.1, 30.5), ("eight", 30.6, 31.0))
+    plan = plan_alignment(lines, words)
+    lead = {index: (positions, line_words) for index, positions, line_words, _ in forced_requests(lines, plan, backing=False)}
+    backing = {index: (positions, line_words) for index, positions, line_words, _ in forced_requests(lines, plan, backing=True)}
+    alone = {index: positions for index, positions, _, _ in forced_requests(lines, plan)}
+    assert lead == {0: ((0, 1), ["one", "two"]), 2: ((0, 1), ["seven", "eight"])}
+    assert backing == {0: ((2, 3), ["three", "four"]), 1: ((0, 1), ["five", "six"])}
+    # without a backing stem the backing part is left out of the lead's alignment; backing lines go on the lead whole
+    assert alone == {0: (0, 1), 1: (0, 1), 2: (0, 1)}
+
+
+def test_a_backing_part_left_out_of_forced_alignment_keeps_its_own_timing():
+    lines = [LyricLine(None, "one two (three four)")]
+    lead = heard(("one", 1.0, 1.3), ("two", 1.4, 1.8))
+    backing = [TimedWord("three", 2.5, 2.8, 0.9, "backing"), TimedWord("four", 2.9, 3.3, 0.9, "backing")]
+    forced = [[TimedWord("one", 1.05, 1.3, 0.9), TimedWord("two", 1.45, 1.8, 0.9), None, None]]
+    result = all_words(align_lyrics(lines, sorted([*lead, *backing], key=lambda w: w.start), forced=forced))
+    assert [round(w.start, 2) for w in result] == [1.05, 1.45, 2.5, 2.9]
+    assert [w.source for w in result] == ["forced", "forced", "whisper", "whisper"]
+
+
+def test_a_backing_part_sung_over_the_lead_keeps_its_times():
+    lines = [LyricLine(None, "one two three (four five six)")]
+    lead = heard(("one", 1.0, 1.4), ("two", 1.5, 1.9), ("three", 2.0, 4.0))
+    forced = [[TimedWord("one", 1.0, 1.4, 0.9), TimedWord("two", 1.5, 1.9, 0.9), TimedWord("three", 2.0, 4.0, 0.9),
+               TimedWord("four", 2.5, 2.8, 0.9), TimedWord("five", 2.9, 3.2, 0.9), TimedWord("six", 3.3, 3.8, 0.9)]]
+    words = all_words(align_lyrics(lines, lead, forced=forced))
+    assert [round(w.start, 2) for w in words] == [1.0, 1.5, 2.0, 2.5, 2.9, 3.3]
+    assert words[2].end == pytest.approx(4.0)

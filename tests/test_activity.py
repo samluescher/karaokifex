@@ -65,3 +65,22 @@ def test_stereo_input_and_save_load(activity, tmp_path):
     activity.save(path)
     loaded = Activity.load(path)
     assert np.array_equal(loaded.voiced, activity.voiced) and loaded.hop == activity.hop
+
+
+def test_phrase_end_stops_where_an_echo_takes_over():
+    # A note from 1.0 to 2.0 s, then its echo decaying from 20 dB under it for a second: still voiced, not the note.
+    rng = np.random.default_rng(0)
+    samples = rng.normal(0, 1e-4, 4 * RATE)
+    t = np.arange(len(samples)) / RATE
+    note = (t >= 1.0) & (t < 2.0)
+    samples[note] += 0.3 * np.sin(2 * np.pi * 220 * t[note])
+    tail = (t >= 2.0) & (t < 3.0)
+    samples[tail] += 0.03 * np.exp(-(t[tail] - 2.0) * 2) * np.sin(2 * np.pi * 220 * t[tail])
+    activity = Activity.compute(samples, RATE)
+    assert activity.is_voiced(2.3)
+    assert activity.phrase_end(1.5, 3.5) == pytest.approx(2.0, abs=0.05)
+
+
+def test_phrase_end_keeps_a_note_through_a_breath(activity):
+    # the fixture's 50 ms breath at 1.5 s dips far under the note, but the note goes on
+    assert activity.phrase_end(1.2, 3.0) == pytest.approx(2.0, abs=0.03)

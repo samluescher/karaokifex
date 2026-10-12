@@ -19,6 +19,7 @@ PEAK_RANGE = 40.0  # ...unless that is more than this far below the loud parts (
 HYSTERESIS = 6.0  # dB; once voiced, a frame stays voiced down to threshold - this
 MIN_GAP = 0.15  # seconds; shorter silences inside singing are filled (breaths, consonants)
 MIN_BLIP = 0.10  # seconds; shorter voiced bits are dropped (clicks, bleed)
+END_DROP = 12.0  # dB; a held note ends where its level falls this far under the loudest it was (phrase_end)
 
 
 @dataclass(frozen=True)
@@ -82,12 +83,21 @@ class Activity:
         return min((frame * self.hop for frame in onsets), key=lambda time: abs(time - t))
 
     def phrase_end(self, t: float, limit: float) -> float:
-        """Where the singing going on at t stops (at most `limit`); t itself when silent there."""
+        """Where the singing going on at t stops (at most `limit`); t itself when silent there.
+
+        It stops where the voice does, or where its level has fallen END_DROP dB under the loudest it was since t and
+        stays there MIN_GAP: an echo or a fade decays slowly from the note's level, still over the voiced threshold long
+        after the note."""
         if not self.is_voiced(t):
             return t
         a, b = self._frame(t), self._frame(limit)
-        silent = np.flatnonzero(~self.voiced[a:b])
-        return limit if not len(silent) else max(t, (a + silent[0]) * self.hop)
+        level = self.db[a:b]
+        fallen = level < np.maximum.accumulate(level) - END_DROP if len(level) else np.zeros(0, dtype=bool)
+        # (fallen for MIN_GAP at least: a breath or a consonant dips as far, and the note goes on after it)
+        hold = max(1, round(MIN_GAP / self.hop))
+        lasting = np.convolve(fallen, np.ones(hold, dtype=int), mode="full")[hold - 1:] >= hold if len(fallen) else fallen
+        stopped = np.flatnonzero(~self.voiced[a:b] | lasting)
+        return limit if not len(stopped) else max(t, (a + stopped[0]) * self.hop)
 
     def onset_envelope(self) -> np.ndarray:
         """Rises in vocal energy per frame, emphasised where a phrase starts after a pause (like a lyric line)."""

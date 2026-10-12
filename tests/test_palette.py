@@ -1,6 +1,6 @@
 import numpy as np
 
-from karaokifex.palette import Swatch, dominant_colors, without_bars
+from karaokifex.palette import Swatch, dominant_colors, motion, without_bars
 
 RED, BLUE, YELLOW = (200, 30, 40), (20, 40, 180), (250, 240, 10)
 
@@ -54,3 +54,12 @@ def test_black_bars_are_cropped():
 def test_black_frames_are_not_cropped_away():
     frames = np.zeros((2, 8, 8, 3), dtype=np.uint8)
     assert without_bars(frames).shape == frames.shape
+
+
+def test_motion_is_nothing_for_one_picture_and_grows_with_change():
+    assert motion(striped_frames()) == 0.0
+    assert motion(striped_frames()[:1]) == 0.0
+    frames = striped_frames()
+    frames[1::2] = 255 - frames[1::2]  # every other frame inverted
+    assert motion(frames) > 100
+    assert 0 < motion(striped_frames(noise=4)) < 5

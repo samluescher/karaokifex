@@ -1,11 +1,13 @@
 """python -m karaokifex.music <song folder>... | --library <root> [--only "Artist - Song"]...
-                             [--steps melody,chords,tab] [--again] [--gpu-lock FILE] [--free-gb 2.5] [--cpu]
+                             [--steps melody,chords,known,tab] [--again] [--gpu-lock FILE] [--free-gb 2.5] [--cpu]
 
 One song at a time. The models are loaded for a song and let go after it, inside the GPU lock karaokifex's runs
 share (--gpu-lock, else KARAOKIFEX_GPU_LOCK), so a song being made and this take turns on the card. Before a
 song, it waits while the card has less than --free-gb free (the line model and Chatterbox may be on it), up to
 WAIT_MOST s, then does that song on the CPU. A file is made again when what it's made from is newer, or with
---again; a song that fails is logged and the next one taken.
+--again; a song that fails is logged and the next one taken. The chords are made before the melody, which
+reads their key (melody.py). The known step (no model, no GPU) puts the notes a source of yours has for the song
+(notes-source.json, by karaokifex-notes) into melody.json, as notes.apply() does, and runs between the melody and the tab.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+from karaokifex import notes as notes_mod
 from karaokifex.music import chords as chords_mod
 from karaokifex.music import melody as melody_mod
 from karaokifex.music import tab as tab_mod
@@ -94,15 +97,7 @@ def run(folder: Path, steps: set[str], again: bool, lock, want_free: float, cpu:
         from karaokifex.music.weights import weights
         with lock:
             device = device_for(want_free, cpu)
-            if need_melody:
-                from karaokifex.music._rmvpe import Rmvpe
-                t0 = time.perf_counter()
-                model = Rmvpe(weights("rmvpe.pt"), device)
-                data = melody_mod.analyse(folder, model)
-                del model
-                free_gpu_memory()
-                melody_mod.write(folder, "melody.json", data)
-                done["melody"] = f"{len(data['notes'])} notes from the {data['source']}, {time.perf_counter() - t0:.1f} s"
+            # the chords first: the melody's notes are snapped to their key (melody.analyse reads chords.json)
             if need_chords:
                 t0 = time.perf_counter()
                 model = chords_mod.Btc(weights("btc_model_large_voca.pt"), device)
@@ -111,6 +106,21 @@ def run(folder: Path, steps: set[str], again: bool, lock, want_free: float, cpu:
                 free_gpu_memory()
                 melody_mod.write(folder, "chords.json", data)
                 done["chords"] = f"{len(data['chords'])} chords in {data['key']}, {time.perf_counter() - t0:.1f} s"
+            if need_melody:
+                from karaokifex.music._rmvpe import Rmvpe
+                t0 = time.perf_counter()
+                model = Rmvpe(weights("rmvpe.pt"), device)
+                data = melody_mod.analyse(folder, model)
+                del model
+                free_gpu_memory()
+                melody_mod.write(folder, "melody.json", data)
+                done["melody"] = (f"{len(data['notes'])} notes from the {data['source']}, tuning {data['tuning']:+.0f} c "
+                                  f"({data['tuning_from'] or 'unknown'}), reliability {data['reliability']['score']}, "
+                                  f"{time.perf_counter() - t0:.1f} s")
+    if "known" in steps and melody_json.exists() and (again or notes_mod.known_stale(folder)) and notes_mod.apply(folder):
+        known = json.loads(melody_json.read_text(encoding="utf-8")).get("known")
+        done["known"] = (f"{known['matched']} detected notes put right by {known['source']}, {known['added']} added" if known
+                         else "back to the notes as detected")
     if "tab" in steps and (again or newer(tab_json, melody_json, chords_json)) and (melody_json.exists() or chords_json.exists()):
         read = lambda p: json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
         data = tab_mod.make(read(chords_json), read(melody_json))
@@ -124,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("folders", nargs="*")
     ap.add_argument("--library")
     ap.add_argument("--only", action="append")
-    ap.add_argument("--steps", default="melody,chords,tab")
+    ap.add_argument("--steps", default="melody,chords,known,tab")
     ap.add_argument("--again", action="store_true")
     ap.add_argument("--gpu-lock", default=os.environ.get("KARAOKIFEX_GPU_LOCK"))
     ap.add_argument("--free-gb", type=float, default=2.5)

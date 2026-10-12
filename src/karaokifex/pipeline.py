@@ -8,10 +8,11 @@
 
 One separation pass yields both stems the rest needs: the backing track (for
 render) and the lead vocals (for transcription, vocal activity and forced
-alignment). With --mix-vote, `transcribe_mix` also transcribes the full mix.
+alignment). `transcribe` listens twice, with and without the lyrics as prompt,
+and fills what the first pass missed from the second. With --mix-vote, `transcribe_mix` also transcribes the full mix.
 With --no-burn-lyrics, `render` doesn't wait for `subtitles`, which still writes
 the lyrics files. With --palette, `palette` samples frames of the extracted video
-for its dominant colours. With --describe, `describe` asks MusicBrainz about the
+for its dominant colours and how much its picture changes (motion). With --describe, `describe` asks MusicBrainz about the
 song (album, year, genres, writers, language) once the lyrics are in. With
 --quality, `quality` reads the download's streams and the renders' once they
 are made, before the download is deleted. With --keep-source, `original` puts the download's own
@@ -37,27 +38,30 @@ from rich.live import Live
 
 from karaokifex.activity import Activity
 from karaokifex.ass import build_ass
-from karaokifex.config import Config
+from karaokifex.config import DEFAULT_BACKING_MODEL, Config
 from karaokifex.console import TaskBoard, console, register_tasks
 from karaokifex.gpu import free_gpu_memory
 from karaokifex.metadata import guess_artist_song, name_guesses, title_segments
 from karaokifex.models import Lyrics, TimedWord, VideoInfo
 from karaokifex import dialects, level, quality
-from karaokifex.palette import dominant_colors, without_bars
+from karaokifex.palette import dominant_colors, motion, without_bars
 from karaokifex.runner import RunReport, Task, TaskContext, TaskRunner, current_task
 from karaokifex.steps import download, lyrics, media, musicbrainz, separation, transcription
 from karaokifex.timing import (
+    BACKING,
     Alignment,
     AlignmentPlan,
     align_lyrics,
+    backing_heard,
     fill_unlyricked,
     filter_heard,
     forced_requests,
     kept_lines,
     lines_from_words,
+    merge_heard,
     plan_alignment,
 )
-from karaokifex.workspace import Workspace, partial_path
+from karaokifex.workspace import Workspace, partial_path, sanitize_name
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +79,7 @@ class Job:
     song: str
     device: str
     ffmpeg: media.FfmpegBinary = media.FfmpegBinary()
+    kept: bool = False  # made again from its kept download and details: YouTube not asked (kept_download)
 
     @property
     def title(self) -> str:
@@ -110,8 +115,12 @@ def prepare(config: Config) -> Job:
     """Probe the video and set up its working folder."""
     token = current_task.set("probe")
     try:
-        log.info("looking up %s", config.url)
-        info = download.probe(config.url, ffprobe=media.FfmpegBinary(config.ffmpeg or "ffmpeg").ffprobe)
+        info = kept_download(config)
+        if info:
+            log.info("made again from its kept download and details: %s not asked", config.url)
+        else:
+            log.info("looking up %s", config.url)
+            info = download.probe(config.url, ffprobe=media.FfmpegBinary(config.ffmpeg or "ffmpeg").ffprobe)
         artist, song = guess_artist_song(info, config.artist, config.song)
         if config.musicbrainz and not (config.artist and config.song):
             artist, song = canonical_names(info, config.artist, config.song, (artist, song))
@@ -122,9 +131,25 @@ def prepare(config: Config) -> Job:
         log.info("“%s” (%s) → %s – %s", info.title, _format_length(info.duration), artist, song)
         log.info("working folder: %s · device: %s", workspace.root, device)
         log.info("ffmpeg: %s · %s", ffmpeg.path, ffmpeg.describe())
-        return Job(config, workspace, info, artist, song, device, ffmpeg)
+        return Job(config, workspace, info, artist, song, device, ffmpeg, kept=bool(kept_download(config)))
     finally:
         current_task.reset(token)
+
+
+def kept_download(config: Config) -> VideoInfo | None:
+    """A song made again (-a and -s naming its folder) whose folder keeps the download of this very video
+    (--keep-download) and its details (info.json): those details, so neither the probe nor the download asks
+    the video's site again. None for anything else."""
+    if not (config.artist and config.song):
+        return None
+    root = config.output_dir / sanitize_name(f"{config.artist} - {config.song}")
+    try:
+        data = json.loads((root / "info.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not (root / "source.mkv").exists() or not data.get("id") or str(data["id"]) not in config.url:
+        return None
+    return VideoInfo.from_dict(data)
 
 
 def canonical_names(info: VideoInfo, artist: str | None, song: str | None, guess: tuple[str, str],
@@ -165,8 +190,19 @@ def build_tasks(job: Job) -> list[Task]:
         Task("vocal_activity", partial(_vocal_activity, job), deps=("separate_karaoke",),
              outputs=(ws.lead_activity,), description="when the lead vocals are audible"),
         Task("transcribe", partial(_transcribe, job), deps=("separate_karaoke", "load_whisper", "lyrics"),
-             outputs=(ws.transcript_json,), gpu=True, model=True, description="whisperx on the lead vocals"),
+             outputs=(ws.transcript_json,), gpu=True, model=True, description="whisperx on the lead vocals, with and without the lyrics as prompt"),
     ]
+    if cfg.backing_vocals:
+        tasks += [
+            Task("separate_backing", partial(_separate_backing, job), deps=("separate_karaoke",),
+                 outputs=(ws.backing_vocals, ws.backing_activity), gpu=True, model=True,
+                 description=f"{DEFAULT_BACKING_MODEL}: the backing vocals out of the karaoke backing"),
+            # after transcribe, to take over its model
+            Task("transcribe_backing", partial(_transcribe_backing, job),
+                 deps=("separate_backing", "load_whisper", "lyrics", "transcribe"),
+                 outputs=(ws.transcript_backing_json,), gpu=True, model=True,
+                 description="whisperx on the backing vocals, with and without the lyrics as prompt"),
+        ]
     if cfg.mix_vote:
         # Depends on transcribe so it can take over the loaded model instead of loading it twice.
         tasks.append(Task("transcribe_mix", partial(_transcribe_mix, job),
@@ -187,7 +223,8 @@ def build_tasks(job: Job) -> list[Task]:
         tasks.append(Task("quality", partial(_quality, job),
                           deps=("download", "render") + (("original",) if cfg.keep_source else ()),
                           outputs=(ws.quality_json,), description="resolution, frame rate, codecs, bitrates"))
-    subtitle_deps = ("lyrics", "transcribe", "vocal_activity", "force_align")
+    backing = ("transcribe_backing",) if cfg.backing_vocals else ()
+    subtitle_deps = ("lyrics", "transcribe", "vocal_activity", "force_align") + backing
     # Without burned-in lyrics the render doesn't wait for them; the subtitles step still writes the lyrics files.
     render_deps = ("extract_video", "separate_karaoke") + (("subtitles",) if cfg.burn_lyrics else ())
     if not cfg.burn_lyrics:
@@ -195,7 +232,7 @@ def build_tasks(job: Job) -> list[Task]:
     else:
         render_description = "darken, karaoke audio, burn in subtitles" + (" (debug colours)" if cfg.debug_ass else "")
     tasks += [
-        Task("force_align", partial(_force_align, job), deps=("lyrics", "transcribe", "vocal_activity"),
+        Task("force_align", partial(_force_align, job), deps=("lyrics", "transcribe", "vocal_activity") + backing,
              outputs=(ws.forced_json,), gpu=True, model=True, description="wav2vec2 alignment of the known lyrics"),
         Task("subtitles", partial(_subtitles, job),
              deps=subtitle_deps + (("transcribe_mix",) if cfg.mix_vote else ()),
@@ -268,10 +305,12 @@ def _swiss_german_lyrics(job: Job, words: list[TimedWord]) -> None:
     ctx_model = job.config.llm_model or "the chat model"
     rewritten = dialects.rewrite(lines, job.config.llm_url, job.config.llm_model) if job.config.llm_url else None
     how = f"{ctx_model} wrote each line back in Swiss German, and its common words left in Standard German were swapped"
+    by = ctx_model
     if not rewritten:
         # no model, or none that gave Swiss German back: the common words swapped, which reads as Swiss German at least
         rewritten = [dialects.swiss_words(line) for line in lines]
         how = "its common words were swapped for their Swiss German (ich -> i, ist -> isch, nicht -> nöd...)"
+        by = "swapping its common words"
         if not dialects.reads_swiss_german(" ".join(rewritten)):
             log.warning("whisper wrote this Swiss German song in Standard German, and swapping its words didn't make it "
                         "read as Swiss German: its lines are used as heard; give its lyrics with --lyrics-file")
@@ -283,7 +322,7 @@ def _swiss_german_lyrics(job: Job, words: list[TimedWord]) -> None:
     path.write_text("\n".join(header + rewritten) + "\n", encoding="utf-8")
     made = lyrics.from_file(path, job.artist, job.song)
     lyrics.save_lyrics([made], job.workspace.lyrics_json)
-    log.info("%d lines written back in Swiss German by %s (%s)", len(rewritten), ctx_model, path.name)
+    log.info("%d lines written back in Swiss German by %s (%s)", len(rewritten), by, path.name)
 
 
 def _download(job: Job, ctx: TaskContext) -> None:
@@ -291,6 +330,9 @@ def _download(job: Job, ctx: TaskContext) -> None:
         ctx.progress(fraction)
         ctx.note(note)
 
+    if job.kept and job.workspace.source.exists():
+        ctx.note("the kept download")  # made again from it (kept_download): the site not asked
+        return
     download.download(job.config.url, job.workspace.source, on_progress, prefer_h264=job.config.browser_friendly,
                       ffmpeg_path=job.ffmpeg.path)
     log.info("downloaded %s (%.0f MiB)", job.workspace.source.name, job.workspace.source.stat().st_size / 1_048_576)
@@ -313,10 +355,11 @@ def _palette(job: Job, ctx: TaskContext) -> None:
                                  duration=job.info.duration)
     if not len(frames):
         raise RuntimeError(f"no frame of {ws.video.name} could be decoded")
-    swatches = dominant_colors(without_bars(frames))
+    cropped = without_bars(frames)
+    swatches, change = dominant_colors(cropped), motion(cropped)
     _write_json(ws.metadata_json, {"palette": {"colors": [swatch.to_dict() for swatch in swatches],
-                                               "frames": len(frames)}})
-    log.info("dominant colours: %s", ", ".join(f"{swatch.hex} {swatch.weight:.0%}" for swatch in swatches))
+                                               "frames": len(frames), "motion": round(change, 3)}})
+    log.info("dominant colours: %s; motion %.1f", ", ".join(f"{swatch.hex} {swatch.weight:.0%}" for swatch in swatches), change)
 
 
 def _describe(job: Job, ctx: TaskContext) -> str:
@@ -430,8 +473,19 @@ def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target
     words, language = transcription.transcribe(model, audio, job.device,
                                                language=dialects.whisper_language(_song_language(job, candidates)),
                                                prompt=prompt, on_stage=ctx.note)
-    transcription.save_transcript(words, language, target)
     log.info("heard %d words in %s (language: %s)", len(words), audio.name, language)
+    unprompted = {job.workspace.transcript_json: job.workspace.transcript_noprompt_json,
+                  job.workspace.transcript_backing_json: job.workspace.transcript_backing_noprompt_json}
+    if prompt and target in unprompted:
+        # Prompted with the lyrics whisper hears their words better but skips repeats; a pass without the
+        # prompt fills the places the first heard nothing.
+        plain, _ = transcription.transcribe(model, audio, job.device, language=language, prompt=None,
+                                            on_stage=lambda stage: ctx.note(f"{stage} (no prompt)"))
+        transcription.save_transcript(plain, language, unprompted[target])
+        merged = merge_heard(words, plain)
+        log.info("%d more words heard without the lyrics as prompt", len(merged) - len(words))
+        words = merged
+    transcription.save_transcript(words, language, target)
     if swiss and not candidates and target == job.workspace.transcript_json:
         _swiss_german_lyrics(job, words)
 
@@ -439,8 +493,8 @@ def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target
 def _transcribe(job: Job, ctx: TaskContext) -> Any:
     model = _whisper_model(job, ctx, "load_whisper")
     _transcribe_into(job, ctx, model, job.workspace.karaoke_lead, job.workspace.transcript_json)
-    if job.config.mix_vote:
-        return model  # handed over to transcribe_mix, which frees it
+    if job.config.mix_vote or job.config.backing_vocals:
+        return model  # handed over to transcribe_mix or transcribe_backing, which frees it
     del model
     free_gpu_memory()
     return None
@@ -453,23 +507,73 @@ def _transcribe_mix(job: Job, ctx: TaskContext) -> None:
     free_gpu_memory()
 
 
+def _separate_backing(job: Job, ctx: TaskContext) -> None:
+    """The backing vocals: the vocals of the karaoke backing, which the karaoke model leaves the backing singers in."""
+    import soundfile
+
+    ws, cfg = job.workspace, job.config
+    rest = ws.stems_dir / "backing_without_vocals.wav"  # the model's other half: not wanted, not left lying about
+    separation.separate(ws.karaoke_backing, model=DEFAULT_BACKING_MODEL, model_dir=cfg.model_dir,
+                        stems={"vocals": ws.backing_vocals, "instrumental": rest}, overlap=cfg.separation_overlap,
+                        fp16=cfg.fp16, verbose=cfg.verbose, on_stage=ctx.note)
+    rest.unlink(missing_ok=True)
+    samples, rate = soundfile.read(str(ws.backing_vocals), dtype="float32")
+    activity = Activity.compute(samples, rate)
+    partial_file = partial_path(ws.backing_activity)
+    activity.save(partial_file)
+    partial_file.replace(ws.backing_activity)
+    log.info("backing vocals audible %.0f%% of the time", 100 * float(activity.voiced.mean()) if activity.duration else 0)
+
+
+def _transcribe_backing(job: Job, ctx: TaskContext) -> None:
+    model = _whisper_model(job, ctx, "transcribe", "load_whisper")
+    _transcribe_into(job, ctx, model, job.workspace.backing_vocals, job.workspace.transcript_backing_json)
+    del model
+    free_gpu_memory()
+
+
+def _heard(ws: Workspace) -> tuple[list[TimedWord], str, Activity | None, Activity | None]:
+    """What was heard: the lead's words, the backing vocals' (backing_heard) with them when they were transcribed,
+    the language, and the lead's and the backing's activity."""
+    words, language = transcription.load_transcript(ws.transcript_json)
+    activity = Activity.load(ws.lead_activity) if ws.lead_activity.exists() else None
+    backing_activity = None
+    if ws.transcript_backing_json.exists() and ws.backing_activity.exists():
+        backing_activity = Activity.load(ws.backing_activity)
+        backing = backing_heard(transcription.load_transcript(ws.transcript_backing_json)[0], backing_activity, words)
+        words = sorted([*words, *backing], key=lambda w: w.start)
+    return words, language, activity, backing_activity
+
+
 def _force_align(job: Job, ctx: TaskContext) -> None:
     ws = job.workspace
     candidates = lyrics.load_lyrics(ws.lyrics_json)
-    words, language = transcription.load_transcript(ws.transcript_json)
-    activity = Activity.load(ws.lead_activity)
-    plans = [plan_alignment(c.lines, words, activity, language=language) for c in candidates]
-    requests = [((number, index), line_words, window)
-                for number, (candidate, plan) in enumerate(zip(candidates, plans))
-                for index, line_words, window in forced_requests(candidate.lines, plan)]
-    results = transcription.force_align(requests, ws.karaoke_lead, language, job.device, on_stage=ctx.note)
+    words, language, activity, backing_activity = _heard(ws)
+    plans = [plan_alignment(c.lines, words, activity, language=language, backing_activity=backing_activity)
+             for c in candidates]
+    # the backing lines on the backing vocals, when there are, the others on the lead
+    split = backing_activity is not None and ws.backing_vocals.exists()
+    results = {}
+    for audio, which in ((ws.karaoke_lead, False if split else None), (ws.backing_vocals, True)):
+        if which is True and not split:
+            continue
+        requests = [((number, index, positions), line_words, window)
+                    for number, (candidate, plan) in enumerate(zip(candidates, plans))
+                    for index, positions, line_words, window in forced_requests(candidate.lines, plan, backing=which)]
+        results |= transcription.force_align(requests, audio, language, job.device, on_stage=ctx.note)
 
     entries = []
     for number, (candidate, plan) in enumerate(zip(candidates, plans)):
-        lines: list[list[dict[str, Any]] | None] = [None] * len(kept_lines(candidate.lines))
-        for (owner, index), placed in results.items():
-            if owner == number and placed is not None:
-                lines[index] = [asdict(word) for word in placed]
+        kept = kept_lines(candidate.lines)
+        lines: list[list[dict[str, Any] | None] | None] = [None] * len(kept)
+        # a line's lead words and its backing part are aligned apart, each on its own voice: put back by position
+        for (owner, index, positions), placed in results.items():
+            if owner != number or placed is None:
+                continue
+            if lines[index] is None:
+                lines[index] = [None] * len(kept[index][1])
+            for position, word in zip(positions, placed):
+                lines[index][position] = asdict(word)
         aligned = sum(line is not None for line in lines)
         log.info("%s: %s · %d lines force-aligned, %d cut", lyrics.describe(candidate), plan.time_map.describe(),
                  aligned, len(plan.cut))
@@ -481,21 +585,24 @@ def load_forced(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))["candidates"] if path.exists() else []
 
 
-def forced_lines(entry: dict[str, Any]) -> list[list[TimedWord] | None]:
-    return [None if line is None else [TimedWord(**word) for word in line] for line in entry["lines"]]
+def forced_lines(entry: dict[str, Any]) -> list[list[TimedWord | None] | None]:
+    """Each line's forced words; a word left out of its line's alignment (its backing part, unaligned) is None."""
+    return [None if line is None else [None if word is None else TimedWord(**word) for word in line]
+            for line in entry["lines"]]
 
 
 def align_candidates(candidates: list[Lyrics], words: list[TimedWord], language: str | None,
                      activity: Activity | None, forced: list[dict[str, Any]], *,
-                     mix: list[TimedWord] | None = None, use_word_tags: bool = True
-                     ) -> list[tuple[Lyrics, Alignment]]:
+                     mix: list[TimedWord] | None = None, use_word_tags: bool = True,
+                     backing_activity: Activity | None = None) -> list[tuple[Lyrics, Alignment]]:
     """Align every lyrics candidate; best (by how well it fits the audio) first."""
     results = []
     for number, candidate in enumerate(candidates):
         entry = forced[number] if number < len(forced) and forced[number]["lrclib_id"] == candidate.lrclib_id else None
         plan = AlignmentPlan.from_dict(entry["plan"]) if entry else None
         alignment = align_lyrics(candidate.lines, words, plan=plan, forced=forced_lines(entry) if entry else None,
-                                 activity=activity, language=language, mix_heard=mix, use_word_tags=use_word_tags)
+                                 activity=activity, language=language, mix_heard=mix, use_word_tags=use_word_tags,
+                                 backing_activity=backing_activity)
         results.append((candidate, alignment))
     return sorted(results, key=lambda item: -item[1].quality)  # stable: lrclib's ranking breaks ties
 
@@ -503,18 +610,19 @@ def align_candidates(candidates: list[Lyrics], words: list[TimedWord], language:
 def _subtitles(job: Job, ctx: TaskContext) -> str:
     ws = job.workspace
     candidates = lyrics.load_lyrics(ws.lyrics_json)
-    words, language = transcription.load_transcript(ws.transcript_json)
-    activity = Activity.load(ws.lead_activity) if ws.lead_activity.exists() else None
+    words, language, activity, backing_activity = _heard(ws)
     mix = transcription.load_transcript(ws.transcript_mix_json)[0] if job.config.mix_vote else None
     if candidates:
-        ranked = align_candidates(candidates, words, language, activity, load_forced(ws.forced_json), mix=mix)
+        ranked = align_candidates(candidates, words, language, activity, load_forced(ws.forced_json), mix=mix,
+                                  backing_activity=backing_activity)
         for candidate, alignment in ranked:
             log.info("%s: quality %.2f (%.0f%% heard, forced score %s, %d lines cut)", lyrics.describe(candidate),
                      alignment.quality, alignment.match_ratio * 100,
                      "–" if alignment.forced_score is None else f"{alignment.forced_score:.2f}", alignment.cut)
         chosen, alignment = ranked[0]
         # what's sung where the lyrics have nothing (a rap they left out), from what was heard there
-        lines = fill_unlyricked(alignment.lines, words, activity)
+        lead_words = [w for w in words if w.source != BACKING]  # what the lead sings that the lyrics lack
+        lines = fill_unlyricked(alignment.lines, lead_words, activity)
         if len(lines) > len(alignment.lines):
             log.info("%d lines added from the transcription where the lyrics have none", len(lines) - len(alignment.lines))
         sources = Counter(word.source for line in lines for word in line.words)
@@ -523,7 +631,7 @@ def _subtitles(job: Job, ctx: TaskContext) -> str:
             log.warning("the lyrics fit the audio poorly — they may belong to a different version of the song")
         description = lyrics.describe(chosen)
     else:
-        lines = lines_from_words(filter_heard(words, activity))
+        lines = lines_from_words(filter_heard([w for w in words if w.source != BACKING], activity))
         log.info("built %d lines from the transcription", len(lines))
         description = "whisperx transcription (lrclib miss)"
     if not lines:

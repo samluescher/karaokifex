@@ -72,6 +72,14 @@ fake `whisperx` module). The pure logic, where the tests concentrate, lives in:
   `tab-sources.example.toml` with made-up addresses) for a song's chords or tab, writes the first answer to `tab-source.json`
   and, against our own `chords.json`, `tab-check.json` (agree / wrong / missing). A downloaded tab is the source of truth. It
   knows no site: each source says its address template and how its answer is read (chords over lyrics, ChordPro, ASCII tab).
+- `notes.py`: `karaokifex-notes <song folder>...` looks for a song's known lead notes (an UltraStar chart or a MIDI file) in
+  `<folder>/notes/`, then in the local `note-sources.toml` (git-ignored; the repo has only `note-sources.example.toml` with made-up
+  addresses; a source is a `url` or a local `path`, and a path that names no file is found again by the folded names), checks
+  every answer against our detected melody (`music/align.py`: the pitch-class shift and the octave, a coarse and a fine
+  dynamic-programming time warp, slope 0.75-1.33) and writes `note-check.json` for every answer, `notes-source.json` for an
+  accepted one (its `source` tags the song as having known notes, as tab-source.json does), and applies it: `apply()` puts the
+  known notes over melody.json's (`notes_detected` keeps the detected ones; the `known` step of `python -m karaokifex.music`
+  does the same). `--report` is the gold-set figure: how right our notes are. Read UltraStar and MIDI (SMF) in numpy, no library.
 - `quality.py`: `summary` reads a file's streams with ffprobe; the `quality` step (`--quality`) reads the
   download before cleanup deletes it, and `karaokifex-quality` makes do with `info.json` and the original.
 

@@ -1,0 +1,47 @@
+# Copy to note-sources.toml (git-ignored) and set the sources you trust. karaokifex-notes looks for the notes of each song in
+# <song folder>/notes/ first (files you dropped there: *.txt an UltraStar chart, *.mid / *.midi / *.kar a MIDI file), then asks
+# these in order, checks every answer against the lead melody we detected (melody.json) and keeps the first that agrees. Every
+# answer, kept or not, is written to note-check.json. These addresses and folders are made up.
+#
+# A source has a name, a kind and EITHER a url OR a path:
+#   kind   "ultrastar" (a chart: #BPM, #GAP, notes with a pitch and a syllable), "midi" (a .mid or .kar: the melody is the track
+#          that fits the recording best), or "auto" (the default: by the file's extension, else by what it starts with)
+#   url    asked with GET, the body of the answer is the file itself (bytes, so a MIDI file works); {artist} and {song} are the
+#          names as written, {artist_q} {song_q} URL-quoted, {artist_slug} {song_slug} lower case with dashes
+#   path   a file or a glob on this machine ("*" and "?" as in a shell, the same placeholders): a folder of files you collected
+#   headers   sent with the request (url only)
+# A path that names no file is looked for again by the names folded (accents, case and punctuation ignored, "The " dropped,
+# "feat." and what follows ignored, a trailing version number ignored), in the template's own folders, so both layouts below
+# find "Beatles, The/Yesterday.2.mid" for the song "Yesterday" by "The Beatles". A path source whose folder is not there yet
+# is skipped without a word.
+
+# a folder of your own, one file a song, named like the song folder (a chart or a MIDI, whichever you have)
+[[source]]
+name = "mine"
+kind = "auto"
+path = "/data/notes/{artist} - {song}.*"
+
+# a big collection of MIDI files, one folder an artist and several versions of a song ("Title.1.mid", "Title.2.mid"): all the versions
+# are tried and the one that agrees best is kept
+[[source]]
+name = "midi-collection"
+kind = "midi"
+path = "/data/notes/midi-collection/{artist}/{song}*.mid"
+
+# a site that answers a plain address with the file (for one that needs a search first, put a small local server in front of it
+# that searches and answers with the file, as the tabs' sources do)
+[[source]]
+name = "example-midi"
+kind = "midi"
+url = "https://midi.example.com/{artist_slug}/{song_slug}.mid"
+# headers = { "User-Agent" = "karaokifex (you@example.com)" }
+
+# UltraStar charts are the most exact notes there are (written syllable by syllable against the recording). The big databases
+# of them want a login: sign in with your own account in your browser and put your own session cookie here, never somebody's
+# else, and respect the site's rules about asking it. Its download is usually a form, not an address, so this too wants a small
+# local server in front of it.
+# [[source]]
+# name = "example-charts"
+# kind = "ultrastar"
+# url = "http://127.0.0.1:8798/chart?artist={artist_q}&song={song_q}"
+# headers = { "Cookie" = "session=PASTE-YOUR-OWN" }

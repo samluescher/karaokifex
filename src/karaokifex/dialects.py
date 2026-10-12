@@ -19,7 +19,7 @@ found. A few lines have enough of them to tell.
     whisper_language(code) -> str|None  "de" for Swiss German, else the code
     swiss_share(text) -> float|None     the dialect's share of the marker words (None: too few)
     reads_swiss_german(text), reads_standard_german(text) -> bool
-    rewrite(lines, url, model) -> [lines] or None
+    rewrite(lines, url, model) -> [lines] or None   CHUNK lines a request, so a long film's fit the context
     swiss_words(text) -> text           the common words swapped for their Swiss German (ich -> i, ist -> isch...)
 
 A chat model given only an instruction may hand the lines back unchanged (an 8B one did); worked examples
@@ -135,10 +135,39 @@ SYSTEM = ("You write Swiss German (Schwiizerdütsch) the way it is sung and writ
           "Reply with the numbered lines only, as they came in.")
 
 
+CHUNK = 40  # lines per request: a long film's thousands of lines don't fit the model's context in one
+
+
 def rewrite(lines: Sequence[str], url: str, model: str | None = None, *, post: Post = requests.post,
             timeout: float = 120) -> list[str] | None:
-    """The lines in Swiss German spelling, by a chat model at `url` (OpenAI-style, /chat/completions); None when it
-    answers with another number of lines, or with lines that don't read as Swiss German."""
+    """The lines in Swiss German spelling, by a chat model at `url` (OpenAI-style, /chat/completions), CHUNK lines
+    per request. A chunk the model gets wrong has its common words swapped instead (swiss_words), and once the
+    server fails the rest do too. None when no chunk came from the model, or the whole doesn't read as Swiss German."""
+    out: list[str] = []
+    chunks = [list(lines[at:at + CHUNK]) for at in range(0, len(lines), CHUNK)]
+    used = 0
+    failed = False
+    for chunk in chunks:
+        got = None if failed else _rewrite_chunk(chunk, url, model, post, timeout)
+        if got is False:
+            failed = True
+        if got:
+            used += 1
+        out += got or [swiss_words(line) for line in chunk]
+    if not used:
+        return None
+    if used < len(chunks):
+        log.warning("the Swiss German rewrite: %d of %d chunks by the model, the others' common words swapped",
+                    used, len(chunks))
+    if not reads_swiss_german(" ".join(out)):
+        log.warning("the Swiss German rewrite doesn't read as Swiss German: not used")
+        return None
+    return out
+
+
+def _rewrite_chunk(lines: list[str], url: str, model: str | None, post: Post, timeout: float) -> list[str] | None | bool:
+    """One request's lines back from the model, their common words left in Standard German swapped; None when it
+    answers with another number of lines, False when the server fails."""
     numbered = "\n".join(f"{i + 1}. {line}" for i, line in enumerate(lines))
     shots = []
     for a, b in EXAMPLES:
@@ -151,7 +180,7 @@ def rewrite(lines: Sequence[str], url: str, model: str | None = None, *, post: P
         text = r.json()["choices"][0]["message"]["content"]
     except (requests.RequestException, KeyError, IndexError, ValueError) as error:
         log.warning("no Swiss German rewrite: %s", error)
-        return None
+        return False
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     got: dict[int, str] = {}
     for line in text.splitlines():
@@ -163,8 +192,4 @@ def rewrite(lines: Sequence[str], url: str, model: str | None = None, *, post: P
         log.warning("the Swiss German rewrite came back with %d of %d lines: not used", len(got), len(lines))
         return None
     # what the model left in Standard German: its common words swapped for their Swiss German
-    out = [swiss_words(line) for line in out]
-    if not reads_swiss_german(" ".join(out)):
-        log.warning("the Swiss German rewrite doesn't read as Swiss German: not used")
-        return None
-    return out
+    return [swiss_words(line) for line in out]
