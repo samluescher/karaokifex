@@ -4,7 +4,7 @@ A source can be a file here instead of a link: its path, or a file:// URL (karao
 one from a track's audio and cover). Its metadata is what ffprobe reads of it, and what its source
 said, from <file>.info.json beside it where there is one: id (a source key such as
 bandcamp:<host>/track/<name>), title, artist, track, uploader, duration, and made ("still": a
-still picture made into a video, as karaokifex-bandcamp makes them).
+still picture made into a video, as karaokifex-bandcamp makes them) and released (when the track came out).
 """
 
 from __future__ import annotations
@@ -100,6 +100,7 @@ def _probe_local(path: Path, ffprobe: str) -> VideoInfo:
         track=side.get("track"),
         uploader=side.get("uploader"),
         made=side.get("made"),
+        released=side.get("released"),
     )
 
 

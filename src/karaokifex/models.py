@@ -21,6 +21,9 @@ class VideoInfo:
     # how the video was made, when it was made rather than shot: "still" for a still picture zooming slowly
     # (karaokifex-bandcamp's), which a player may want to liven up; None for a video as found
     made: str | None = None
+    # when its source says the track came out (YYYY-MM-DD), where that is the song's own date: a Bandcamp track's
+    # (karaokifex-bandcamp's sidecar); never a YouTube video's upload date, which is the video's
+    released: str | None = None
 
     @classmethod
     def from_ytdlp(cls, info: dict[str, Any]) -> VideoInfo:

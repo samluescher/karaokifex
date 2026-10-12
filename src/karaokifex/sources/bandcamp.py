@@ -73,6 +73,13 @@ def cover_url(info: dict) -> str | None:
     return re.sub(r"_\d+\.(jpg|png)$", r"_0.\1", url) if url else None
 
 
+def released(info: dict) -> str | None:
+    """When the track came out, YYYY-MM-DD: the release date Bandcamp gives, else the day it was published there
+    (yt-dlp's upload_date, which for a Bandcamp track is its own: a single says no release date)"""
+    day = str(info.get("release_date") or info.get("upload_date") or "")
+    return f"{day[:4]}-{day[4:6]}-{day[6:8]}" if len(day) == 8 and day.isdigit() else None
+
+
 def still_filter(height: int) -> str:
     """The picture, once: the cover whole over a blurred copy of itself filling a 16:9 frame, at twice
     the video's size, so the zoom that follows has pixels to spare."""
@@ -180,7 +187,8 @@ def make(url: str, out: Path, *, height: int = HEIGHT, ffmpeg: str = "ffmpeg", p
                    str(target)]
         subprocess.run(command, check=True)
     sidecar = {"id": source_key(url), "title": f"{artist} - {track}", "artist": artist, "track": track,
-               "album": info.get("album"), "uploader": info.get("uploader") or artist, "duration": duration or None,
+               "album": info.get("album"), "released": released(info),
+               "uploader": info.get("uploader") or artist, "duration": duration or None,
                "webpage_url": url, "made": "still", "cover": art,
                "photos": [{"image": p.image, "page": p.page, "how": p.how} for p in found]}
     Path(f"{target}.info.json").write_text(json.dumps(sidecar, indent=1, ensure_ascii=False), encoding="utf-8")

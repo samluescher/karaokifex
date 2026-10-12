@@ -54,6 +54,12 @@ def test_a_local_file_is_a_source_a_link_is_not(tmp_path: Path):
     assert VideoInfo.from_dict({**info.to_dict(), "later": 1}).made == "still"
 
 
+def test_a_bandcamp_track_says_when_it_came_out():
+    assert bandcamp.released({"release_date": "20210305", "upload_date": "20230120"}) == "2021-03-05"
+    assert bandcamp.released({"upload_date": "20230120"}) == "2023-01-20", "a single: the day it was published"
+    assert bandcamp.released({}) is None
+
+
 def test_bandcamp_keys_and_covers():
     assert bandcamp.source_key("https://DisasterFantasy.bandcamp.com/track/Anywhere/?from=x") == \
         "bandcamp:disasterfantasy.bandcamp.com/track/anywhere"

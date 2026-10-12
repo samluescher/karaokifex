@@ -193,6 +193,14 @@ def test_describe_song_keeps_the_names_and_a_language_when_musicbrainz_is_away(j
     assert json.loads(job.workspace.song_json.read_text(encoding="utf-8")) == about
 
 
+def test_describe_song_takes_the_year_from_the_source_when_musicbrainz_knows_no_recording(job, monkeypatch):
+    """SL-52: Disaster Fantasy is only on Bandcamp, so MusicBrainz knows none of their songs"""
+    monkeypatch.setattr(pipeline.musicbrainz, "describe", lambda *_, **__: None)
+    about = pipeline.describe_song(job.workspace.song_json, "Disaster Fantasy", "Anywhere", released="2023-01-20")
+    assert (about["year"], about["released"], about["year_from"]) == (2023, "2023-01-20", "source")
+    assert "year" not in pipeline.describe_song(job.workspace.song_json, "Disaster Fantasy", "Anywhere")
+
+
 def test_quality_reads_the_download_before_it_goes(job):
     assert "quality" not in tasks_of(job)
     measured = replace(job, config=replace(job.config, quality=True, keep_source=True))

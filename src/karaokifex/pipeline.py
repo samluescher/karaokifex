@@ -365,17 +365,23 @@ def _palette(job: Job, ctx: TaskContext) -> None:
 def _describe(job: Job, ctx: TaskContext) -> str:
     ctx.note("asking MusicBrainz…")
     candidates = lyrics.load_lyrics(job.workspace.lyrics_json)
+    try:
+        released = json.loads(job.workspace.info_json.read_text(encoding="utf-8")).get("released")
+    except (OSError, ValueError):
+        released = None
     details = describe_song(job.workspace.song_json, job.artist, job.song,
-                            job.config.language or (lyrics.guess_language(candidates[0].lines) if candidates else None))
+                            job.config.language or (lyrics.guess_language(candidates[0].lines) if candidates else None),
+                            released=released)
     return ", ".join(str(x) for x in (details.get("album"), details.get("year"), *details.get("genres", [])[:2]) if x) \
         or "MusicBrainz knows nothing more"
 
 
 def describe_song(target: Path, artist: str, song: str, language: str | None = None, *,
-                  get: musicbrainz.HttpGet = requests.get) -> dict[str, Any]:
+                  released: str | None = None, get: musicbrainz.HttpGet = requests.get) -> dict[str, Any]:
     """Write song.json: the song's names and what MusicBrainz knows of it. The language is the one
     the song's work is in, else `language` (the lyrics' or the singing's). MusicBrainz not answering
-    leaves the rest out, and says so."""
+    leaves the rest out, and says so. A song MusicBrainz knows no recording of (a band only on Bandcamp)
+    takes its year from when its source says it came out (`released`, YYYY-MM-DD), with year_from saying so."""
     about: dict[str, Any] = {"artist": artist, "song": song}
     try:
         details = musicbrainz.describe(artist, song, get=get)
@@ -384,7 +390,10 @@ def describe_song(target: Path, artist: str, song: str, language: str | None = N
         about["musicbrainz"] = None
     else:
         if details is None:
-            log.info("MusicBrainz knows no recording of “%s – %s”", artist, song)
+            log.info("MusicBrainz knows no recording of “%s – %s”%s", artist, song,
+                     f": its year from its source, out {released}" if released else "")
+            if released and released[:4].isdigit():
+                about.update(year=int(released[:4]), released=released, year_from="source")
         else:
             about.update(details.to_dict())
             log.info("MusicBrainz: first out %s, on %s · %s · by %s · sung in %s", details.year or "?", details.album or "no album",
