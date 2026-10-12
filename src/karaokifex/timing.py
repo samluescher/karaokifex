@@ -540,21 +540,31 @@ def _resolve_gap(lines: list[int], low: float, high: float, mapped: list[float |
 
 
 def forced_requests(lines: Sequence[LyricLine], plan: AlignmentPlan, *, use_word_tags: bool = True,
-                    backing: bool | None = None) -> list[tuple[int, list[str], Window]]:
-    """(line index, normalised words, window) for every line forced alignment should time.
+                    backing: bool | None = None) -> list[tuple[int, tuple[int, ...], list[str], Window]]:
+    """(line index, word positions, normalised words, window) for every line forced alignment should time.
 
-    `backing` True: only the backing lines (all in parentheses), to be aligned on the backing vocals; False: only
-    the others, on the lead; None: all of them.
+    `backing` True: the words in parentheses (backing lines, and a line's backing part: "one two (three four)"),
+    to be aligned on the backing vocals; False: the words outside them, on the lead; None: the lead's words of every
+    line and the backing lines whole, all on the lead (no backing stem). A line's backing part is never aligned on
+    the lead: the lead doesn't sing it, and the aligner crushed it into whatever gap the lead left.
     """
     requests = []
     for index, (line, words) in enumerate(kept_lines(lines)):
         if index in plan.cut or index >= len(plan.windows) or (window := plan.windows[index]) is None:
             continue
-        if backing is not None and is_backing(line.text) != backing:
-            continue
         if use_word_tags and line.word_starts:
             continue
-        requests.append((index, [normalize(word) for word in words], window))
+        inside = [flag for _, flag in _in_parentheses(words)]
+        if all(inside):
+            if backing is False:
+                continue
+            positions = tuple(range(len(words)))
+        elif backing:
+            positions = tuple(k for k, flag in enumerate(inside) if flag)
+        else:
+            positions = tuple(k for k, flag in enumerate(inside) if not flag)
+        if positions:
+            requests.append((index, positions, [normalize(words[k]) for k in positions], window))
     return requests
 
 
@@ -961,16 +971,26 @@ def _cohere(tokens: Sequence[_Token], times: list[Times | None]) -> None:
                         times[k] = None
 
 
-def _drop_non_monotonic(times: list[Times | None]) -> None:
-    """Safety net in case whisperx reports words out of order."""
-    last = -math.inf
+def _drop_non_monotonic(times: list[Times | None], apart: Sequence[int | None] | None = None) -> None:
+    """Safety net in case whisperx reports words out of order. Words `apart` (a line's backing part, _backing_apart)
+    keep an order of their own: the backing may answer over the lead's last words."""
+    last = {False: -math.inf, True: -math.inf}
     for index, value in enumerate(times):
         if value is None:
             continue
-        if value[0] < last:
+        own = apart is not None and apart[index] is not None
+        if value[0] < last[own]:
             times[index] = None
         else:
-            last = value[0]
+            last[own] = value[0]
+
+
+def _backing_apart(tokens: Sequence[_Token]) -> list[int | None]:
+    """For each word of a line's backing part (a line with words in and out of parentheses: "one two (three four)")
+    the index of its line's first word, None for every other word: those keep an order of their own."""
+    mixed = {line for line, group in groupby(tokens, key=lambda t: t.line) if len({t.backing for t in group}) == 2}
+    line_first = {tokens[k].line: k for k in range(len(tokens) - 1, -1, -1)}
+    return [line_first[t.line] if t.backing and t.line in mixed else None for t in tokens]
 
 
 # --- merging -------------------------------------------------------------------------------
@@ -1001,12 +1021,13 @@ def align_lyrics(lines: Sequence[LyricLine], heard: Sequence[TimedWord], *, plan
         mix = filter_heard(mix_heard, activity)
         times = _vote(times, _matched_times(tokens, mix, _match_pairs(tokens, mix, windows, window, language,
                                                                       skip=plan.cut)))
-    _drop_non_monotonic(times)
+    apart = _backing_apart(tokens)
+    _drop_non_monotonic(times, apart)
     _cohere(tokens, times)
     matched = sum(t is not None for t in times)
     sources = ["whisper" if t is not None else "" for t in times]
     forced_scores = _apply_better_sources(kept, tokens, times, sources, plan, forced, use_word_tags)
-    _drop_non_monotonic(times)
+    _drop_non_monotonic(times, apart)
     sources = [source if t is not None else "" for source, t in zip(sources, times)]
 
     all_tokens = tokens
@@ -1018,7 +1039,8 @@ def align_lyrics(lines: Sequence[LyricLine], heard: Sequence[TimedWord], *, plan
     _label(sources, times, lambda: _fill_gaps(tokens, times, activity), "interpolated")
     if activity is not None:
         _snap_to_voice(tokens, times, activity, backing_activity)  # type: ignore[arg-type]  # every slot is filled by now
-    final = _make_monotonic(times)  # type: ignore[arg-type]
+    # (a line's backing part keeps its own order: the backing may answer over the lead's last words)
+    final = _make_monotonic(times, _backing_apart(tokens))  # type: ignore[arg-type]
 
     timed_lines = [
         TimedLine(tuple(TimedWord(tokens[k].text, *final[k], sources[k]) for k, _ in group))
@@ -1099,10 +1121,13 @@ def _apply_better_sources(kept: Sequence[tuple[LyricLine, list[str]]], tokens: S
         line_forced = forced[index] if forced is not None and index < len(forced) else None
         if not line_forced or len(line_forced) != len(indices):
             continue
-        scores = [word.score or 0.0 for word in line_forced]
-        forced_scores.update(zip(indices, scores))
-        trusted_line = statistics.fmean(scores) >= FORCED_LINE_MIN
-        for k, word, score in zip(indices, line_forced, scores):
+        # (a word left out of the line's forced alignment -- its backing part, aligned apart or not at all -- is None)
+        placed = [(k, word, word.score or 0.0) for k, word in zip(indices, line_forced) if word is not None]
+        if not placed:
+            continue
+        forced_scores.update((k, score) for k, _, score in placed)
+        trusted_line = statistics.fmean(score for _, _, score in placed) >= FORCED_LINE_MIN
+        for k, word, score in placed:
             if trusted_line:
                 use = score >= FORCED_WORD_MIN or times[k] is None
             else:
@@ -1270,19 +1295,19 @@ def _snap_to_voice(tokens: Sequence[_Token], times: list[Times], activity: Activ
                    backing_activity: Activity | None = None) -> None:
     """Line starts move to a phrase onset, words don't start in silence, last words last as long as the note.
 
-    A backing line (all in parentheses) follows the backing vocals' activity instead, or stays as it is without.
+    Words in parentheses (a backing line, or a line's backing part) follow the backing vocals' activity instead, or
+    stay as they are without: the lead's says nothing of them. A line's backing part starts and ends like a line.
     """
     count = len(times)
-    backing_line = {line: all(t.backing for t in group)
-                    for line, group in groupby(tokens, key=lambda t: t.line)}
     lead_activity = activity
+    part = lambda k: (tokens[k].line, tokens[k].backing)
     for k in range(count):
-        activity = backing_activity if backing_line[tokens[k].line] else lead_activity  # type: ignore[assignment]
+        activity = backing_activity if tokens[k].backing else lead_activity  # type: ignore[assignment]
         if activity is None:
             continue
         start, end, score = times[k]
-        first_of_line = k == 0 or tokens[k - 1].line != tokens[k].line
-        last_of_line = k == count - 1 or tokens[k + 1].line != tokens[k].line
+        first_of_line = k == 0 or part(k - 1) != part(k)
+        last_of_line = k == count - 1 or part(k + 1) != part(k)
         following = times[k + 1][0] if k + 1 < count else math.inf
         if first_of_line and (onset := activity.onset_near(start, ONSET_SNAP)) is not None and onset < end:
             start = onset
@@ -1296,7 +1321,23 @@ def _snap_to_voice(tokens: Sequence[_Token], times: list[Times], activity: Activ
         times[k] = (start, max(end, start + MIN_DURATION), score)
 
 
-def _make_monotonic(times: list[Times]) -> list[Times]:
+def _make_monotonic(times: list[Times], apart: Sequence[int | None] | None = None) -> list[Times]:
+    """Starts never going back, ends never past the next start. Words `apart` (a line's backing part: the index of
+    their line's first word) do so among themselves, never starting before their line's first word: the backing may
+    sing over the lead, which a single order would crush into the gap after it."""
+    if apart is not None and any(a is not None for a in apart):
+        result = list(times)
+        lead = [k for k in range(len(times)) if apart[k] is None]
+        back = [k for k in range(len(times)) if apart[k] is not None]
+        for indices, made in ((lead, _make_monotonic([times[k] for k in lead])), (back, _make_monotonic([times[k] for k in back]))):
+            for k, t in zip(indices, made):
+                result[k] = t
+        for k in back:
+            first = apart[k]
+            if result[k][0] < result[first][0]:
+                start, end, score = result[k]
+                result[k] = (result[first][0], max(end, result[first][0] + MIN_DURATION), score)
+        return result
     result: list[Times] = []
     previous_start = 0.0
     for start, end, score in times:

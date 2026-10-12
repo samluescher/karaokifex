@@ -557,17 +557,23 @@ def _force_align(job: Job, ctx: TaskContext) -> None:
     for audio, which in ((ws.karaoke_lead, False if split else None), (ws.backing_vocals, True)):
         if which is True and not split:
             continue
-        requests = [((number, index), line_words, window)
+        requests = [((number, index, positions), line_words, window)
                     for number, (candidate, plan) in enumerate(zip(candidates, plans))
-                    for index, line_words, window in forced_requests(candidate.lines, plan, backing=which)]
+                    for index, positions, line_words, window in forced_requests(candidate.lines, plan, backing=which)]
         results |= transcription.force_align(requests, audio, language, job.device, on_stage=ctx.note)
 
     entries = []
     for number, (candidate, plan) in enumerate(zip(candidates, plans)):
-        lines: list[list[dict[str, Any]] | None] = [None] * len(kept_lines(candidate.lines))
-        for (owner, index), placed in results.items():
-            if owner == number and placed is not None:
-                lines[index] = [asdict(word) for word in placed]
+        kept = kept_lines(candidate.lines)
+        lines: list[list[dict[str, Any] | None] | None] = [None] * len(kept)
+        # a line's lead words and its backing part are aligned apart, each on its own voice: put back by position
+        for (owner, index, positions), placed in results.items():
+            if owner != number or placed is None:
+                continue
+            if lines[index] is None:
+                lines[index] = [None] * len(kept[index][1])
+            for position, word in zip(positions, placed):
+                lines[index][position] = asdict(word)
         aligned = sum(line is not None for line in lines)
         log.info("%s: %s · %d lines force-aligned, %d cut", lyrics.describe(candidate), plan.time_map.describe(),
                  aligned, len(plan.cut))
@@ -579,8 +585,10 @@ def load_forced(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))["candidates"] if path.exists() else []
 
 
-def forced_lines(entry: dict[str, Any]) -> list[list[TimedWord] | None]:
-    return [None if line is None else [TimedWord(**word) for word in line] for line in entry["lines"]]
+def forced_lines(entry: dict[str, Any]) -> list[list[TimedWord | None] | None]:
+    """Each line's forced words; a word left out of its line's alignment (its backing part, unaligned) is None."""
+    return [None if line is None else [None if word is None else TimedWord(**word) for word in line]
+            for line in entry["lines"]]
 
 
 def align_candidates(candidates: list[Lyrics], words: list[TimedWord], language: str | None,
