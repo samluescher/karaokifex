@@ -45,3 +45,21 @@ def test_a_rewrite_left_in_standard_german_is_swapped_after():
     lines = ["Ich habe heute nichts gemacht", "es ist nicht so einfach"]
     unchanged = lambda *a, **k: _Answer("1. Ich habe heute nichts gemacht\n2. es ist nicht so einfach")
     assert dialects.rewrite(lines, "http://x/v1", post=unchanged) == ["I ha hüt nüt gmacht", "es isch nöd so eifach"]
+
+
+def test_a_long_film_is_rewritten_in_chunks_and_a_failed_server_leaves_the_rest_swapped():
+    lines = ["Ich habe heute nichts gemacht", "es ist nicht so einfach"] * dialects.CHUNK  # two chunks
+    asked = []
+
+    def answer(url, json, timeout):
+        asked.append(len(json["messages"][-1]["content"].splitlines()))
+        if len(asked) > 1:
+            raise dialects.requests.HTTPError("400 Client Error: Bad Request")
+        return _Answer("\n".join(f"{i + 1}. I ha hüt nüt gmacht" for i in range(dialects.CHUNK)))
+
+    out = dialects.rewrite(lines, "http://x/v1", post=answer)
+    assert asked == [dialects.CHUNK, dialects.CHUNK] and len(out) == len(lines)
+    assert out[:dialects.CHUNK] == ["I ha hüt nüt gmacht"] * dialects.CHUNK
+    assert out[dialects.CHUNK:dialects.CHUNK + 2] == ["I ha hüt nüt gmacht", "es isch nöd so eifach"]
+    failing = lambda *a, **k: (_ for _ in ()).throw(dialects.requests.ConnectionError("refused"))
+    assert dialects.rewrite(lines, "http://x/v1", post=failing) is None

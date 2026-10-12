@@ -305,10 +305,12 @@ def _swiss_german_lyrics(job: Job, words: list[TimedWord]) -> None:
     ctx_model = job.config.llm_model or "the chat model"
     rewritten = dialects.rewrite(lines, job.config.llm_url, job.config.llm_model) if job.config.llm_url else None
     how = f"{ctx_model} wrote each line back in Swiss German, and its common words left in Standard German were swapped"
+    by = ctx_model
     if not rewritten:
         # no model, or none that gave Swiss German back: the common words swapped, which reads as Swiss German at least
         rewritten = [dialects.swiss_words(line) for line in lines]
         how = "its common words were swapped for their Swiss German (ich -> i, ist -> isch, nicht -> nöd...)"
+        by = "swapping its common words"
         if not dialects.reads_swiss_german(" ".join(rewritten)):
             log.warning("whisper wrote this Swiss German song in Standard German, and swapping its words didn't make it "
                         "read as Swiss German: its lines are used as heard; give its lyrics with --lyrics-file")
@@ -320,7 +322,7 @@ def _swiss_german_lyrics(job: Job, words: list[TimedWord]) -> None:
     path.write_text("\n".join(header + rewritten) + "\n", encoding="utf-8")
     made = lyrics.from_file(path, job.artist, job.song)
     lyrics.save_lyrics([made], job.workspace.lyrics_json)
-    log.info("%d lines written back in Swiss German by %s (%s)", len(rewritten), ctx_model, path.name)
+    log.info("%d lines written back in Swiss German by %s (%s)", len(rewritten), by, path.name)
 
 
 def _download(job: Job, ctx: TaskContext) -> None:
