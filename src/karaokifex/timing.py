@@ -442,7 +442,7 @@ def video_order(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activity
     A video may sing the song's blocks in another order than the lyrics site has them: a film cut with the spoken part
     before the third verse and the vamps at its end. Line placement keeps the lyrics' order through cuts and repeats,
     so of two blocks swapped it leaves one out. Here the lines the order-keeping path leaves out are placed again among
-    the heard words it did not use, and a run of BLOCK_LINES consecutive lines or more heard in order there is a block
+    the lead's heard words it did not use (never the backing singers' echoes), and a run of BLOCK_LINES consecutive lines or more heard in order there is a block
     the video moved (looked for BLOCK_ROUNDS times over, for more than one). The lines come back in the video's order,
     each synced start its place's time in the video (a line not placed keeps the lyrics' spacing from the placed line
     before it, the first lines theirs back from the first placed), word tags and ends moved with it, so everything after
@@ -463,8 +463,9 @@ def video_order(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activity
     used = {j for p in placed for j in range(p.first, p.last + 1)}
     moved: list[tuple[int, int, float]] = []
     for _ in range(BLOCK_ROUNDS):
+        # (a block the video moved is sung by the lead: the backing singers' echoes of a chorus are no place for one)
         left = {index for index in range(len(kept)) if index not in video}
-        free = [j for j in range(len(heard)) if j not in used]
+        free = [j for j in range(len(heard)) if j not in used and heard[j].source != BACKING]
         if len(left) < BLOCK_LINES or len(free) < BLOCK_LINES:
             break
         again = _place_lines(tokens, [by_line[i] if i in left else [] for i in range(len(kept))], [heard[j] for j in free],
