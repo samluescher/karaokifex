@@ -72,7 +72,8 @@ FILL_MIN, FILL_PAD, FILL_WORDS, FILL_VOICED = 4.0, 0.3, 6, 0.4
 FILL_SCORE = 0.3  # heard words scored below this aren't shown
 BACKING = "backing"  # the source of a word heard in the backing vocals
 BACKING_FOR_LEAD = 0.3  # what such a word counts for a lyric word outside parentheses
-BACKING_APART = 0.5  # s: a lead word this near the backing's words means the backing sings under the lead, not a line of its own
+BACKING_APART = 0.1  # s: a lead word this far inside the backing's words means the backing sings under the lead, not a line of its own
+                     # (a lead line right before or after it is the next line, not the lead under it)
 # placing lines on what was heard (_place_lines): a place for a line needs this share of its words heard...
 PLACE_MIN = 0.5
 # ...two placed lines keep lrclib's spacing within this many seconds (plus this share of their distance)...
@@ -329,16 +330,17 @@ def plan_alignment(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activ
     # (a line counts as heard by the lead's words, by the backing's for its words in parentheses, or by the backing's for
     # its lead words where no lead word is heard between them -- the backing singing a line of its own; the backing
     # singing under the lead's words something else that happens to share a word, "thriller", makes no line heard)
+    # (a line counts as heard by the lead's words, by the backing's for its words in parentheses, or by the backing's for
+    # its lead words where no lead word is heard inside their span -- the backing singing a line of its own, which the
+    # lyrics leave unmarked; the backing singing under the lead's words something else that happens to share a word or
+    # two, "thriller night", makes no line heard)
     heard_lines = []
     for indices in by_line:
         got = [m for m in matches if m.i in indices and times[m.i] is not None]
         own = any(heard[m.j].source != BACKING or tokens[m.i].backing for m in got)
         if got and not own:
-            # (the backing alone: enough of the line's words, PLACE_MIN, and no lead word within BACKING_APART s of them)
             a, b = min(heard[m.j].start for m in got), max(heard[m.j + m.nj - 1].end for m in got)
-            lead_near = any(w.source != BACKING and a - BACKING_APART <= w.start <= b + BACKING_APART for w in heard)
-            enough = sum(m.ni for m in got) >= PLACE_MIN * len(indices)
-            heard_lines.append(enough and not lead_near)
+            heard_lines.append(not any(w.source != BACKING and a + BACKING_APART <= w.start <= b - BACKING_APART for w in heard))
         else:
             heard_lines.append(bool(got))
     ends_before, starts_after = _neighbour_times(by_line, times)
@@ -407,8 +409,8 @@ def _line_places(tokens: Sequence[_Token], indices: Sequence[int], heard: Sequen
         # words under the next line's start). How much the path gains by it: the lead's more (where both sang it, the
         # lead's place wins)
         last_j = j + matches[-1].j + matches[-1].nj
-        a0, b0 = heard[j].start - BACKING_APART, heard[last_j - 1].end + BACKING_APART
-        lead_under = any(w.source != BACKING and a0 <= w.start <= b0 for w in heard[max(0, j - 8):last_j + 8])
+        a0, b0 = heard[j].start + BACKING_APART, heard[last_j - 1].end - BACKING_APART
+        lead_under = any(w.source != BACKING and a0 <= w.start <= b0 for w in heard[j:last_j])
         backing_weight = BACKING_FOR_LEAD if lead_under else 1.0
         heard_here = sum(f * (backing_weight if heard[j + m.j].source == BACKING and not local[m.i].backing else 1.0)
                          for f, m in zip(found, matches))
