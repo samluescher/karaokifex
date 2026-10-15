@@ -80,7 +80,8 @@ each log line is tagged with the step that wrote it.
 
 All files for a song go into a folder named `Artist - Song` in the current directory (or `--output-dir`).
 If you re-run the same command, any step whose output already exists is skipped, so a failed run picks
-up where it stopped (`--force` redoes everything). After a successful run, karaokifex deletes the
+up where it stopped (`--force` redoes everything but the lyrics lookup, which stands once `lyrics.json` is there so a
+song made again asks lrclib nothing; `--fresh-lyrics` asks it again). After a successful run, karaokifex deletes the
 temporary files. It keeps the video, the ASS file, the karaoke audio track, the lyrics with their word
 timings (`timings.json`), and the video's metadata (`info.json`, `metadata.json`). `--keep-source` also
 keeps the original: the video with its own sound (vocals and all), as `<Artist - Song> (Original).mkv`.

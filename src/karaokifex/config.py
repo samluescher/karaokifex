@@ -52,6 +52,7 @@ class Config:
     keep_source: bool = False  # also render the original video with its own sound, like the karaoke video
     keep_download: bool = False  # keep the download as it came (source.mkv): the best there is, never re-encoded
     force: bool = False
+    fresh_lyrics: bool = False  # --force asks lrclib again too (else the lyrics.json there stands)
     lyrics_file: Path | None = None  # lyrics given with the song, used instead of lrclib: plain text or LRC
     verbose: bool = False
 

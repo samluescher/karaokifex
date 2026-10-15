@@ -73,6 +73,16 @@ def test_existing_outputs_are_reused(tmp_path):
     assert calls == ["b"]
 
 
+def test_a_kept_task_stands_under_force(tmp_path):
+    existing = tmp_path / "fetched.json"
+    existing.write_text("{}")
+    calls: list[str] = []
+    report = TaskRunner([Task("fetch", lambda ctx: calls.append("fetch"), outputs=(existing,), keep=True),
+                         Task("work", lambda ctx: calls.append("work"), deps=("fetch",))], force=True).run()
+    assert calls == ["work"]
+    assert report.outcomes["fetch"].status is Status.CACHED
+
+
 def test_force_reruns_everything(tmp_path):
     existing = tmp_path / "out.txt"
     existing.write_text("x")

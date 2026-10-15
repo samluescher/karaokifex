@@ -125,7 +125,9 @@ log = logging.getLogger("karaokifex")
 @click.option("--lyrics-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
               help="Lyrics given with the song, for when lrclib (always asked first) has none: plain text a line a "
                    "line, or LRC, in any encoding; # lines are notes. karaokifex-lyrics-web finds some on the web.")
-@click.option("--force", is_flag=True, help="Redo every step, even if its output already exists.")
+@click.option("--force", is_flag=True, help="Redo every step, even if its output already exists (the lyrics looked up before "
+                                            "stand: --fresh-lyrics asks lrclib again).")
+@click.option("--fresh-lyrics", is_flag=True, help="Ask lrclib for the lyrics again, even with a lyrics.json there.")
 @click.option("-v", "--verbose", is_flag=True, help="Show debug output, including the libraries' logs.")
 @click.version_option(__version__, "-V", "--version")
 def main(url: str, **options: object) -> None:

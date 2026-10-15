@@ -105,6 +105,7 @@ class Task:
     gpu: bool = False
     model: bool = False  # runs a model on the GPU: takes the shared GPU lock, when there is one
     description: str = ""
+    keep: bool = False  # its output stands even under --force: what was fetched from a service, not computed from the song
 
     def outputs_exist(self) -> bool:
         return bool(self.outputs) and all(path.exists() for path in self.outputs)
@@ -200,7 +201,7 @@ class TaskRunner:
                     waiting.remove(name)
                     progressed = True
                     upstream_cached = all(status is Status.CACHED for status in dep_status)
-                    if not self.force and upstream_cached and task.outputs_exist():
+                    if (not self.force or task.keep) and upstream_cached and task.outputs_exist():
                         self._set_status(name, report.outcomes[name], Status.CACHED)
                         _log_as(name, logging.INFO, "↺ reusing existing output")
                     else:
