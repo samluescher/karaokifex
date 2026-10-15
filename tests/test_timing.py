@@ -17,6 +17,7 @@ from karaokifex.timing import (
     normalize,
     plan_alignment,
     split_words,
+    video_order,
 )
 
 
@@ -215,6 +216,32 @@ def test_a_video_that_leaves_out_one_of_two_identical_blocks_is_followed_through
     assert [line.text for line in result.lines] == [text for text, _ in video]
     assert [line.start for line in result.lines] == pytest.approx([start for _, start in video], abs=0.05)
     assert result.cut == 5
+
+
+def test_blocks_the_video_sings_in_another_order_come_back_in_its_order():
+    # lrclib (the album): three blocks A B C, 4 s a line; the video sings A, then C, then B, each line 4 s apart too
+    A = ["red kite flies high", "blue boat sails far", "green tree grows tall"]
+    B = ["old clock ticks slow", "warm bread smells good", "cold rain falls down"]
+    C = ["small dog barks loud", "bright star shines on", "long road runs west"]
+    lines = [LyricLine(10.0 + 4.0 * i, text) for i, text in enumerate([*A, *B, *C])]
+    video = [(text, 5.0 + 4.0 * i) for i, text in enumerate([*A, *C, *B])]
+    words, activity = sung_lines(*video)
+    ordered, moved = video_order(lines, words, activity, language="en")
+    assert [line.text for line in ordered] == [text for text, _ in video]
+    assert [line.start for line in ordered] == pytest.approx([start for _, start in video], abs=0.3)
+    assert len(moved) == 1 and (moved[0][0], moved[0][1]) == (6, 8)
+    result = align_lyrics(ordered, words, activity=activity, language="en")
+    assert [line.text for line in result.lines] == [text for text, _ in video]
+    assert [line.start for line in result.lines] == pytest.approx([start for _, start in video], abs=0.05)
+    assert result.cut == 0
+
+
+def test_a_video_in_the_lyrics_order_is_left_as_it_is():
+    texts = [*BLOCK, "shout it out loud", *BLOCK]
+    lines = [LyricLine(4.0 * i, text) for i, text in enumerate(texts)]
+    words, activity = sung_lines(*[(text, 5.0 + 4.0 * i) for i, text in enumerate(texts)])
+    ordered, moved = video_order(lines, words, activity)
+    assert moved == [] and [line.start for line in ordered] == [line.start for line in lines]
 
 
 def test_both_transcriptions_are_kept_but_a_word_heard_by_both_only_once():

@@ -27,7 +27,7 @@ import json
 import logging
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -60,6 +60,7 @@ from karaokifex.timing import (
     lines_from_words,
     merge_heard,
     plan_alignment,
+    video_order,
 )
 from karaokifex.workspace import Workspace, partial_path, sanitize_name
 
@@ -558,6 +559,7 @@ def _force_align(job: Job, ctx: TaskContext) -> None:
     ws = job.workspace
     candidates = lyrics.load_lyrics(ws.lyrics_json)
     words, language, activity, backing_activity = _heard(ws)
+    candidates = in_video_order(candidates, words, language, activity)
     plans = [plan_alignment(c.lines, words, activity, language=language, backing_activity=backing_activity)
              for c in candidates]
     # the backing lines on the backing vocals, when there are, the others on the lead
@@ -590,6 +592,22 @@ def _force_align(job: Job, ctx: TaskContext) -> None:
     _write_json(ws.forced_json, {"candidates": entries})
 
 
+def in_video_order(candidates: list[Lyrics], words: list[TimedWord], language: str | None,
+                   activity: Activity | None) -> list[Lyrics]:
+    """Each candidate's lines in the order the video sings them (timing.video_order), where it moves blocks; said in the
+    log. Run alike before forced alignment and the subtitles, from the same transcript, so their line indices agree."""
+    out = []
+    for candidate in candidates:
+        lines, moved = video_order(candidate.lines, words, activity, language=language)
+        if moved:
+            blocks = ", ".join(f"lines {a + 1}-{b + 1} at {int(t // 60)}:{t % 60:04.1f}" for a, b, t in moved)
+            log.info("%s: %d block%s sung elsewhere than the lyrics have them: %s", lyrics.describe(candidate), len(moved),
+                     "" if len(moved) == 1 else "s", blocks)
+            candidate = replace(candidate, lines=tuple(lines))
+        out.append(candidate)
+    return out
+
+
 def load_forced(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))["candidates"] if path.exists() else []
 
@@ -620,6 +638,7 @@ def _subtitles(job: Job, ctx: TaskContext) -> str:
     ws = job.workspace
     candidates = lyrics.load_lyrics(ws.lyrics_json)
     words, language, activity, backing_activity = _heard(ws)
+    candidates = in_video_order(candidates, words, language, activity)
     mix = transcription.load_transcript(ws.transcript_mix_json)[0] if job.config.mix_vote else None
     if candidates:
         ranked = align_candidates(candidates, words, language, activity, load_forced(ws.forced_json), mix=mix,

@@ -12,7 +12,9 @@ best first:
 - `lrc-line` / `interpolated`: everything else, packed into the voiced parts
   of the gap it falls in.
 
-`plan_alignment` first places synced lines on what whisper heard (`_place_lines`:
+`video_order` first puts synced lines into the order the video sings them where it moves whole blocks (a film cut
+of the song with the spoken part before the last verse), each start then the video's own time, so everything after
+reads a lyrics sheet in the video's order. `plan_alignment` then places synced lines on what whisper heard (`_place_lines`:
 the best order-keeping path through every place each line was heard, where
 keeping lrclib's spacing is free and a jump costs a few words), so a video that
 leaves out a block of identical lines is followed through the cut; with too few
@@ -83,6 +85,9 @@ PLACE_PAUSE = 2.5  # seconds between two heard words of a place that end it
 LINE_BREAK = 3.0  # seconds between a line's heard words that split them into groups (_cohere)...
 STRAY_SCORE = 0.3  # ...of which a smaller one with a word scored under this loses its times
 MIN_PLACED = 3  # fewer placed lines than this: the time map's anchors decide alone
+# video_order: a run of this many consecutive lyric lines (one unheard line inside allowed) heard in order among the words the
+# order-keeping path left unused is a block the video sings elsewhere than the lyrics have it; looked for this many times over
+BLOCK_LINES, BLOCK_ROUNDS = 3, 4
 
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'"})
 # Spellings that differ between lyric sites and whisper; compared with apostrophes and spaces removed.
@@ -428,6 +433,78 @@ def _place_lines(tokens: Sequence[_Token], by_line: Sequence[list[int]], heard: 
         path.append(places[n])
         n = back[n]
     return path[::-1]
+
+
+def video_order(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activity: Activity | None = None, *,
+                language: str | None = None) -> tuple[list[LyricLine], list[tuple[int, int, float]]]:
+    """The synced lyric lines in the order the video sings them, on the video's clock, and the blocks it moved.
+
+    A video may sing the song's blocks in another order than the lyrics site has them: a film cut with the spoken part
+    before the third verse and the vamps at its end. Line placement keeps the lyrics' order through cuts and repeats,
+    so of two blocks swapped it leaves one out. Here the lines the order-keeping path leaves out are placed again among
+    the heard words it did not use, and a run of BLOCK_LINES consecutive lines or more heard in order there is a block
+    the video moved (looked for BLOCK_ROUNDS times over, for more than one). The lines come back in the video's order,
+    each synced start its place's time in the video (a line not placed keeps the lyrics' spacing from the placed line
+    before it, the first lines theirs back from the first placed), word tags and ends moved with it, so everything after
+    reads a lyrics sheet in the video's own order. Unsynced lyrics, and a video that moves nothing, come back as they
+    are, the kept lines only: `moved` is then empty, else (first line, last line, where in the video) per block.
+    """
+    kept = kept_lines(lines)
+    starts = [line.start for line, _ in kept]
+    if not kept or not any(s is not None for s in starts) or not heard:
+        return [line for line, _ in kept], []
+    tokens = _tokens(kept)
+    heard = filter_heard(heard, activity)
+    by_line = [[k for k in range(len(tokens)) if tokens[k].line == index] for index in range(len(kept))]
+    placed = _place_lines(tokens, by_line, heard, starts, language)
+    if not placed:
+        return [line for line, _ in kept], []
+    video = {p.line: p.start for p in placed}
+    used = {j for p in placed for j in range(p.first, p.last + 1)}
+    moved: list[tuple[int, int, float]] = []
+    for _ in range(BLOCK_ROUNDS):
+        left = {index for index in range(len(kept)) if index not in video}
+        free = [j for j in range(len(heard)) if j not in used]
+        if len(left) < BLOCK_LINES or len(free) < BLOCK_LINES:
+            break
+        again = _place_lines(tokens, [by_line[i] if i in left else [] for i in range(len(kept))], [heard[j] for j in free],
+                             starts, language)
+        runs: list[list[_Place]] = []
+        for p in again:
+            if runs and runs[-1][-1].line < p.line <= runs[-1][-1].line + 2:
+                runs[-1].append(p)
+            else:
+                runs.append([p])
+        blocks = [run for run in runs if len(run) >= BLOCK_LINES]
+        if not blocks:
+            break
+        for run in blocks:
+            for p in run:
+                video[p.line] = p.start
+                used.update(free[j] for j in range(p.first, p.last + 1))
+            moved.append((run[0].line, run[-1].line, run[0].start))
+    if not moved:
+        return [line for line, _ in kept], []
+    # each line's time in the video: its place's; else the lyrics' spacing from the placed line before it, the lines before
+    # the first placed one back from it (a line without a synced start takes the one before it)
+    keys: list[float] = [0.0] * len(kept)
+    first = min(video)
+    for index in range(len(kept)):
+        if index in video:
+            keys[index] = video[index]
+        elif index < first:
+            keys[index] = video[first] - ((starts[first] - starts[index]) if starts[first] is not None and starts[index] is not None else 0.0)
+        else:
+            prev = max(i for i in video if i < index)
+            keys[index] = video[prev] + ((starts[index] - starts[prev]) if starts[index] is not None and starts[prev] is not None else 0.0)
+    out = []
+    for index in sorted(range(len(kept)), key=lambda i: (keys[i], i)):
+        line = kept[index][0]
+        delta = keys[index] - starts[index] if starts[index] is not None else 0.0
+        out.append(replace(line, start=keys[index],
+                           word_starts=None if line.word_starts is None else tuple(None if t is None else t + delta for t in line.word_starts),
+                           end=None if line.end is None else line.end + delta))
+    return out, sorted(moved, key=lambda m: m[2])
 
 
 def _step_cost(earlier: _Place, later: _Place, starts: Sequence[float | None]) -> float:
