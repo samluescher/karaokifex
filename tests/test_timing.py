@@ -249,6 +249,17 @@ def test_a_lead_line_heard_only_in_the_backing_vocals_is_not_placed_there():
     assert result.cut == 1
 
 
+def test_a_line_the_backing_sings_alone_is_still_placed_on_it():
+    # the lyrics leave the backing's own line unmarked; the lead is silent while the backing sings it
+    lines = [LyricLine(10.0, "red kite flies high"), LyricLine(14.0, "warm bread smells good"), LyricLine(18.0, "blue boat sails far"),
+             LyricLine(22.0, "small dog barks loud")]
+    words, activity = sung_lines(("red kite flies high", 5.0), ("blue boat sails far", 13.0), ("small dog barks loud", 17.0))
+    backing = [TimedWord(w, 9.0 + 0.4 * k, 9.3 + 0.4 * k, 0.9, source="backing") for k, w in enumerate("warm bread smells good".split())]
+    result = align_lyrics(lines, sorted([*words, *backing], key=lambda w: w.start), activity=activity, language="en")
+    assert [line.text for line in result.lines] == ["red kite flies high", "warm bread smells good", "blue boat sails far", "small dog barks loud"]
+    assert result.lines[1].start == pytest.approx(9.0, abs=0.3)
+
+
 def test_a_video_in_the_lyrics_order_is_left_as_it_is():
     texts = [*BLOCK, "shout it out loud", *BLOCK]
     lines = [LyricLine(4.0 * i, text) for i, text in enumerate(texts)]
