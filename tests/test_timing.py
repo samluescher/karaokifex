@@ -236,6 +236,19 @@ def test_blocks_the_video_sings_in_another_order_come_back_in_its_order():
     assert result.cut == 0
 
 
+def test_a_lead_line_heard_only_in_the_backing_vocals_is_not_placed_there():
+    # the album has a vamp between two sung lines; the video skips it, but the backing singers hum two of its words under
+    # the next line's start: the vamp is cut, not laid over that line
+    lines = [LyricLine(10.0, "red kite flies high"), LyricLine(14.0, "warm bread smells good"), LyricLine(18.0, "blue boat sails far"),
+             LyricLine(22.0, "small dog barks loud")]
+    words, activity = sung_lines(("red kite flies high", 5.0), ("blue boat sails far", 12.0), ("small dog barks loud", 16.0))
+    backing = [TimedWord("bread", 11.6, 11.8, 0.9, source="backing"), TimedWord("good", 11.9, 12.1, 0.9, source="backing")]
+    heard_all = sorted([*words, *backing], key=lambda w: w.start)
+    result = align_lyrics(lines, heard_all, activity=activity, language="en")
+    assert [line.text for line in result.lines] == ["red kite flies high", "blue boat sails far", "small dog barks loud"]
+    assert result.cut == 1
+
+
 def test_a_video_in_the_lyrics_order_is_left_as_it_is():
     texts = [*BLOCK, "shout it out loud", *BLOCK]
     lines = [LyricLine(4.0 * i, text) for i, text in enumerate(texts)]

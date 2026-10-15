@@ -320,12 +320,15 @@ def plan_alignment(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activ
                                                    activity, language, backing_activity)
         supported = True
     skip = frozenset(jumped)
-    times = _matched_times(tokens, heard, _match_pairs(tokens, heard, _line_windows(mapped), window, language,
-                                                       skip=skip))
+    matches = _match_pairs(tokens, heard, _line_windows(mapped), window, language, skip=skip)
+    times = _matched_times(tokens, heard, matches)
     _drop_non_monotonic(times)
     _cohere(tokens, times)
 
-    heard_lines = [any(times[k] is not None for k in indices) for indices in by_line]
+    # (a line counts as heard by the lead's words, or by the backing's for its words in parentheses: the backing singing
+    # under it something else that happens to share a word -- "thriller" -- makes no line heard)
+    by_voice = {m.i + d for m in matches for d in range(m.ni) if heard[m.j].source != BACKING or tokens[m.i + d].backing}
+    heard_lines = [any(times[k] is not None and k in by_voice for k in indices) for indices in by_line]
     ends_before, starts_after = _neighbour_times(by_line, times)
 
     windows: list[Window | None] = []
@@ -385,12 +388,13 @@ def _line_places(tokens: Sequence[_Token], indices: Sequence[int], heard: Sequen
                 break
         found = [_similarity(local[m.i].norm, "".join(heard_norm[j + m.j: j + m.j + m.nj]), phonetic)
                  * weights[j + m.j] * m.ni for m in matches]
-        # whether the line was heard here counts the backing's words in full; how much the path gains by it, the
-        # lead's more (where both sang it, the lead's place wins)
-        if sum(found) < max(PLACE_MIN * lead, 0.6):
-            continue
+        # a word heard in the backing vocals counts in full for a word in parentheses (the backing's own part) and
+        # BACKING_FOR_LEAD for a lead word: the backing echoing the lead helps, but the backing singing something of
+        # its own under the lead's words places no lead line there (a vamp's words under the next line's start)
         score = sum(f * (BACKING_FOR_LEAD if heard[j + m.j].source == BACKING and not local[m.i].backing else 1.0)
                     for f, m in zip(found, matches))
+        if score < max(PLACE_MIN * lead, 0.6):
+            continue
         before = sum(t.natural for t in line_tokens[:matches[0].i])  # unheard words ahead of the first heard one
         pairs = tuple((indices[m.i + d], j + m.j) for m in matches for d in range(m.ni))
         places.append(_Place(line_tokens[0].line, j, j + matches[-1].j + matches[-1].nj - 1, score,
