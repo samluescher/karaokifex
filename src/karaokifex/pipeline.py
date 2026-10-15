@@ -180,7 +180,7 @@ def build_tasks(job: Job) -> list[Task]:
         # (the lyrics stay through --force: a song made again is made from the lyrics it has, and lrclib asked nothing,
         # unless --fresh-lyrics asks for its versions anew)
         Task("lyrics", partial(_lyrics, job), outputs=(ws.lyrics_json,), description="lrclib lookup",
-             keep=not config.fresh_lyrics),
+             keep=not job.config.fresh_lyrics),
         Task("download", partial(_download, job), outputs=(ws.source,),
              description="yt-dlp: best video" + (" (H.264 if as good)" if cfg.browser_friendly else "") + " + audio"),
         Task("load_whisper", partial(_load_whisper, job), outputs=transcripts,
