@@ -87,7 +87,7 @@ def songs(args) -> list[Path]:
 
 def run(folder: Path, steps: set[str], again: bool, lock, want_free: float, cpu: bool) -> dict:
     source = melody_mod.source_of(folder)
-    backing = folder / "stems" / "karaoke_backing.wav"
+    backing = melody_mod.backing_stem(folder)
     melody_json, chords_json, tab_json = folder / "melody.json", folder / "chords.json", folder / "tab.json"
     need_melody = "melody" in steps and (again or newer(melody_json, source, backing))
     need_chords = "chords" in steps and (again or newer(chords_json, source, backing))

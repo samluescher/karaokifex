@@ -48,7 +48,7 @@ reliability says how far the file as a whole can be trusted, each part 0-1 (null
 
 melody.json (version 2; version 1 had no tuning, tuning_conf, tuning_from, key, reliability or conf, and its notes
 were rounded against A440):
-  version, model ("rmvpe"), source ("voice" or "mix")
+  version, model ("rmvpe"), source ("voice", "lead" or "mix")
   tuning        the song's tuning against A440 in cents (+ is sharp), 0 where nothing says
   tuning_conf   how sure of it, 0-1; tuning_from "backing", "lead" or null (see above)
   key           the key the notes were snapped to and in_key counted against, or null
@@ -120,12 +120,24 @@ def source_of(folder: Path) -> Path | None:
     return found[0] if found else None
 
 
+def backing_stem(folder: Path) -> Path:
+    """The karaoke stem: stems/karaoke_backing.wav as the make leaves it, else the Ogg Vorbis a pipeline may keep it as
+    (stems/karaoke_backing.ogg, the same samples' rate and length, lossy); the WAV's path where there is neither."""
+    wav = folder / "stems" / "karaoke_backing.wav"
+    ogg = wav.with_suffix(".ogg")
+    return ogg if not wav.exists() and ogg.exists() else wav
+
+
 def voice(folder: Path, *, binary: str = "ffmpeg") -> tuple[np.ndarray, str]:
-    """The lead voice, mono at 44.1 kHz, and where it came from: the song less its backing ("voice"), or the
-    whole song where there is no backing ("mix")."""
+    """The lead voice, mono at 44.1 kHz, and where it came from: the song less its backing ("voice"), the lead kept by
+    itself (audio/lead.ogg, "lead") where the backing is no longer lossless to take out exactly, or the whole song where
+    there is no backing ("mix")."""
     import soundfile as sf
+    backing = backing_stem(folder)
+    lead = folder / "audio" / "lead.ogg"
+    if backing.suffix != ".wav" and lead.exists():
+        return decode(lead, binary=binary).mean(axis=1), "lead"
     song = decode(source_of(folder), binary=binary)
-    backing = folder / "stems" / "karaoke_backing.wav"
     if not backing.exists():
         return song.mean(axis=1), "mix"
     rest, rate = sf.read(str(backing), dtype="float32", always_2d=True)
@@ -275,7 +287,7 @@ def tuning_of(y: np.ndarray, sr: int) -> tuple[float, float]:
 def backing_tuning(folder: Path) -> tuple[float, float] | None:
     """The song's tuning from its backing, or None where it has none to read."""
     import soundfile as sf
-    path = next((p for p in (folder / "reference.flac", folder / "stems" / "karaoke_backing.wav") if p.exists()), None)
+    path = next((p for p in (folder / "reference.flac", backing_stem(folder)) if p.exists()), None)
     if path is None:
         return None
     with sf.SoundFile(str(path)) as f:
@@ -521,7 +533,8 @@ def analyse(folder: Path, rmvpe, *, binary: str = "ffmpeg") -> dict:
     """melody.json's content for the song in `folder`, with `rmvpe` (_rmvpe.Rmvpe) loaded."""
     import librosa
     sound, origin = voice(folder, binary=binary)
-    if origin == "voice":
+    # (the voice kept for whatever listens to it again, unless the lead is kept by itself already)
+    if origin == "voice" and not (folder / "audio" / "lead.ogg").exists():
         keep_voice(folder, sound)
     at16 = librosa.resample(sound, orig_sr=RATE, target_sr=16000, res_type="soxr_hq")
     f0, confidence = rmvpe.pitch(at16)

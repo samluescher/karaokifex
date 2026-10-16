@@ -178,8 +178,8 @@ def analyse(folder: Path, btc: Btc, *, binary: str = "ffmpeg") -> dict:
     """chords.json's content for the song in `folder`, with `btc` loaded."""
     import librosa
     import soundfile as sf
-    from karaokifex.music.melody import decode, source_of
-    backing = folder / "stems" / "karaoke_backing.wav"
+    from karaokifex.music.melody import backing_stem, decode, source_of
+    backing = backing_stem(folder)
     if backing.exists():
         sound, rate = sf.read(str(backing), dtype="float32", always_2d=True)
         origin = "backing"
