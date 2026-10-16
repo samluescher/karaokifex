@@ -120,6 +120,9 @@ log = logging.getLogger("karaokifex")
 @click.option("--keep-temp", is_flag=True,
               help="Keep all temporary files (e.g. for karaokifex-eval --recompute). By default they are "
                    "deleted after a successful run.")
+@click.option("--keep-lead", is_flag=True,
+              help="Keep the lead vocals, separated from the song (stems/karaoke_lead.wav), when the temporary "
+                   "files are deleted.")
 @click.option("--autodelete", is_flag=True, hidden=True, expose_value=False,
               help="No effect: temporary files are now deleted by default.")
 @click.option("--lyrics-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
@@ -149,7 +152,8 @@ def main(url: str, **options: object) -> None:
     if not result.ok:
         console.print("Temporary files were kept, so running the same command again resumes where it stopped.")
         raise SystemExit(1)
-    clean_up(result.job.workspace, keep_temp=config.keep_temp, keep_download=config.keep_download)
+    clean_up(result.job.workspace, keep_temp=config.keep_temp, keep_download=config.keep_download,
+             keep_lead=config.keep_lead)
 
 
 def show_result(result: PipelineResult) -> None:
@@ -170,10 +174,10 @@ def show_result(result: PipelineResult) -> None:
     print_summary(result.ok, details)
 
 
-def clean_up(workspace: Workspace, *, keep_temp: bool, keep_download: bool = False) -> None:
+def clean_up(workspace: Workspace, *, keep_temp: bool, keep_download: bool = False, keep_lead: bool = False) -> None:
     """Delete the temporary files of a successful run, unless --keep-temp asks to keep them; the download
-    stays with --keep-download."""
-    keep = [workspace.source] if keep_download else []
+    stays with --keep-download, the lead vocals with --keep-lead."""
+    keep = ([workspace.source] if keep_download else []) + ([workspace.karaoke_lead] if keep_lead else [])
     temp_files = workspace.temp_files(keep)
     if not temp_files:
         return

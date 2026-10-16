@@ -62,6 +62,16 @@ def test_cleanup_keeps_the_download_when_asked(tmp_path):
     assert ws.source.exists()
 
 
+def test_clean_up_keeps_the_lead_when_asked(tmp_path):
+    from karaokifex.cli import clean_up
+    ws = Workspace.create(tmp_path, "Artist - Song")
+    for path in (ws.source, ws.audio, ws.karaoke_lead):
+        path.write_text("x")
+    clean_up(ws, keep_temp=False, keep_download=True, keep_lead=True)
+    assert ws.source.exists() and ws.karaoke_lead.exists()
+    assert not ws.audio.exists()
+
+
 def test_cleanup_keeps_karaoke_videos_from_earlier_runs(tmp_path):
     ws = Workspace.create(tmp_path, "Artist [Live] - Song")  # glob metacharacters in the name
     earlier = ws.final_video.with_suffix(".mp4")
