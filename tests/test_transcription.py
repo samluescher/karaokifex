@@ -57,6 +57,16 @@ def test_misdetected_language_explains_how_to_override(fake_whisperx, tmp_path):
         transcription.transcribe(FakeModel("cy"), tmp_path / "vocals.wav", "cpu")
 
 
+def test_a_detected_language_without_a_model_is_heard_again_in_the_fallback(fake_whisperx, tmp_path):
+    words, language = transcription.transcribe(FakeModel("la"), tmp_path / "vocals.wav", "cpu", fallback="en")
+    assert language == "en" and [w.text for w in words] == ["hi"]
+
+
+def test_a_requested_language_without_a_model_still_fails(fake_whisperx, tmp_path):
+    with pytest.raises(ValueError, match="was requested"):
+        transcription.transcribe(FakeModel("la"), tmp_path / "vocals.wav", "cpu", language="la", fallback="en")
+
+
 def test_forced_language_is_used_and_scores_are_kept(fake_whisperx, tmp_path):
     words, language = transcription.transcribe(FakeModel("cy"), tmp_path / "vocals.wav", "cpu", language="en")
     assert language == "en"

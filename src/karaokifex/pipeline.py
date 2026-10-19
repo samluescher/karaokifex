@@ -460,6 +460,9 @@ def _load_whisper(job: Job, ctx: TaskContext) -> object:
     return transcription.load_model(job.config.whisper_model, job.device, dialects.whisper_language(job.config.language))
 
 
+FALLBACK_LANGUAGE = "en"  # what whisper hears a song in again when the language it guessed has no alignment model
+
+
 def _song_language(job: Job, candidates: list[Lyrics]) -> str | None:
     """--language wins; otherwise the lyrics' language, which is more reliable than listening to singing."""
     if job.config.language or not candidates:
@@ -483,9 +486,13 @@ def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target
     swiss = dialects.swiss(job.config.language)
     # a Swiss German song with no lyrics: whisper prompted in Swiss German, which keeps it nearer the dialect
     prompt = lyrics.prompt_text(candidates[0].lines) if candidates else dialects.PROMPT if swiss else None
-    words, language = transcription.transcribe(model, audio, job.device,
-                                               language=dialects.whisper_language(_song_language(job, candidates)),
-                                               prompt=prompt, on_stage=ctx.note)
+    language = dialects.whisper_language(_song_language(job, candidates))
+    # the song's language unknown: the backing sings in the lead's (whisper's guess on backing singers alone strays further),
+    # and a guess with no alignment model is heard again in English rather than failing the song
+    if language is None and target == job.workspace.transcript_backing_json and job.workspace.transcript_json.exists():
+        language = transcription.load_transcript(job.workspace.transcript_json)[1] or None
+    words, language = transcription.transcribe(model, audio, job.device, language=language, prompt=prompt,
+                                               fallback=FALLBACK_LANGUAGE, on_stage=ctx.note)
     log.info("heard %d words in %s (language: %s)", len(words), audio.name, language)
     unprompted = {job.workspace.transcript_json: job.workspace.transcript_noprompt_json,
                   job.workspace.transcript_backing_json: job.workspace.transcript_backing_noprompt_json}

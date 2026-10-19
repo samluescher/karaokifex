@@ -40,10 +40,11 @@ def load_model(name: str, device: str, language: str | None = None) -> Any:
 
 
 def transcribe(model: Any, vocals: Path, device: str, *, language: str | None = None, prompt: str | None = None,
-               on_stage: Callable[[str], None] = lambda _: None) -> tuple[list[TimedWord], str]:
+               fallback: str | None = None, on_stage: Callable[[str], None] = lambda _: None) -> tuple[list[TimedWord], str]:
     """Return every recognised word with start/end times and alignment score, plus the (detected) language.
 
-    `prompt` (the expected lyrics) biases whisper's decoder towards those words.
+    `prompt` (the expected lyrics) biases whisper's decoder towards those words. `fallback`: the language to transcribe in
+    again when the detected one has no alignment model (singing heard as Latin, Yiddish or Javanese), rather than failing.
     """
     import whisperx
 
@@ -57,7 +58,17 @@ def transcribe(model: Any, vocals: Path, device: str, *, language: str | None = 
     if detected:
         log.info("auto-detected language: %s (use --language to override)", language)
     on_stage(f"aligning words ({language})…")
-    align_model, metadata = _load_align_model(whisperx, language, device, detected)
+    try:
+        align_model, metadata = _load_align_model(whisperx, language, device, detected)
+    except ValueError:
+        if not (detected and fallback and fallback != language):
+            raise
+        log.warning("no word-alignment model for the detected language %s: transcribed again in %s", language, fallback)
+        on_stage(f"transcribing again ({fallback})…")
+        result = model.transcribe(audio, batch_size=BATCH_SIZE, language=fallback)
+        language = result["language"]
+        on_stage(f"aligning words ({language})…")
+        align_model, metadata = _load_align_model(whisperx, language, device, False)
     aligned = whisperx.align(result["segments"], align_model, metadata, audio, device, return_char_alignments=False)
     del align_model
     free_gpu_memory()
