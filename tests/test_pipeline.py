@@ -28,6 +28,11 @@ def tasks_of(job):
     return tasks
 
 
+def test_a_kept_download_is_reused_through_force_and_said_to_be(job):
+    assert not tasks_of(job)["download"].keep, "a new song downloads"
+    assert tasks_of(replace(job, kept=True))["download"].keep, "made again from its kept download: cached, not done again"
+
+
 def test_task_graph_is_valid_and_wired(job):
     tasks = tasks_of(job)
     assert {name for name, task in tasks.items() if not task.deps} == {"lyrics", "download", "load_whisper"}

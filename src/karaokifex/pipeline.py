@@ -181,7 +181,8 @@ def build_tasks(job: Job) -> list[Task]:
         # unless --fresh-lyrics asks for its versions anew)
         Task("lyrics", partial(_lyrics, job), outputs=(ws.lyrics_json,), description="lrclib lookup",
              keep=not job.config.fresh_lyrics),
-        Task("download", partial(_download, job), outputs=(ws.source,),
+        # (made again from the download it kept, the same video: the download is reused, and said to be, not done again)
+        Task("download", partial(_download, job), outputs=(ws.source,), keep=bool(job.kept),
              description="yt-dlp: best video" + (" (H.264 if as good)" if cfg.browser_friendly else "") + " + audio"),
         Task("load_whisper", partial(_load_whisper, job), outputs=transcripts,
              description=f"whisperx {cfg.whisper_model}"),
