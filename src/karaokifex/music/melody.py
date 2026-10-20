@@ -16,7 +16,7 @@ song's tuning, the pitch less tuning/100, not against A440. The tuning is where 
 pile up between A440's semitones: librosa.estimate_tuning's method (the offsets from A440's semitones of the spectral
 peaks of the louder half, their histogram of 1 cent, its peak, taken at the middle of its bin), done in numpy
 (spectral_peaks; librosa's own peak finder crashes Python on Windows with numba 0.67), on reference.flac when the song
-has one, else stems/karaoke_backing.wav, the middle TUNING_SECONDS of it. tuning_conf is how far above an even spread
+has one, else stems/backing.wav, the middle TUNING_SECONDS of it. tuning_conf is how far above an even spread
 that peak stands: the share of the offsets within 5 cents of it, from BACKING_FLOOR (0.11, an even spread) to
 BACKING_FULL taken to 0-1. Where the backing says too little (tuning_conf under BACKING_SURE: a song of drums and
 noise) the voice's own pitches say it, the circular mean of their fractions over the frames that are sure (LEAD_SURE)
@@ -120,12 +120,19 @@ def source_of(folder: Path) -> Path | None:
     return found[0] if found else None
 
 
+BACKING_NAMES = ("backing", "karaoke_backing")  # the stem's name, and the name a make before October 2026 gave it
+
+
 def backing_stem(folder: Path) -> Path:
-    """The karaoke stem: stems/karaoke_backing.wav as the make leaves it, else the Ogg Vorbis a pipeline may keep it as
-    (stems/karaoke_backing.ogg, the same samples' rate and length, lossy); the WAV's path where there is neither."""
-    wav = folder / "stems" / "karaoke_backing.wav"
-    ogg = wav.with_suffix(".ogg")
-    return ogg if not wav.exists() and ogg.exists() else wav
+    """The karaoke stem: stems/backing.wav as the make leaves it, else the Ogg Vorbis a pipeline may keep it as
+    (stems/backing.ogg, the same samples' rate and length, lossy), either under the stem's older name (karaoke_backing)
+    for a song made before it was renamed; the WAV's path where there is none of them."""
+    for name in BACKING_NAMES:
+        for kind in ("wav", "ogg"):
+            path = folder / "stems" / f"{name}.{kind}"
+            if path.exists():
+                return path
+    return folder / "stems" / "backing.wav"
 
 
 def voice(folder: Path, *, binary: str = "ffmpeg") -> tuple[np.ndarray, str]:

@@ -191,7 +191,7 @@ def build_tasks(job: Job) -> list[Task]:
         Task("extract_video", partial(_extract_video, job), deps=("download",), outputs=(ws.video,),
              description="ffmpeg → video.mkv (no audio)"),
         Task("separate_karaoke", partial(_separate_karaoke, job), deps=("extract_audio",),
-             outputs=(ws.karaoke_backing, ws.karaoke_lead), gpu=True, model=True, description=" + ".join(cfg.karaoke_models)),
+             outputs=(ws.backing, ws.lead), gpu=True, model=True, description=" + ".join(cfg.karaoke_models)),
         Task("vocal_activity", partial(_vocal_activity, job), deps=("separate_karaoke",),
              outputs=(ws.lead_activity,), description="when the lead vocals are audible"),
         Task("transcribe", partial(_transcribe, job), deps=("separate_karaoke", "load_whisper", "lyrics"),
@@ -440,7 +440,7 @@ def _separate_karaoke(job: Job, ctx: TaskContext) -> None:
                                 fp16=cfg.fp16, verbose=cfg.verbose, on_stage=lambda note: ctx.note(prefix + note))
         pairs.append((lead, backing))
     ctx.note("the song minus the lead…")
-    gains = separation.combine(ws.audio, pairs, backing=ws.karaoke_backing, lead=ws.karaoke_lead)
+    gains = separation.combine(ws.audio, pairs, backing=ws.backing, lead=ws.lead)
     log.info("lead vocals at the song's level (gains %s), the karaoke the song minus their average",
              ", ".join(f"{g:.2f}" for g in gains))
 
@@ -448,7 +448,7 @@ def _separate_karaoke(job: Job, ctx: TaskContext) -> None:
 def _vocal_activity(job: Job, ctx: TaskContext) -> None:
     import soundfile  # only needed here
 
-    samples, rate = soundfile.read(str(job.workspace.karaoke_lead), dtype="float32")
+    samples, rate = soundfile.read(str(job.workspace.lead), dtype="float32")
     activity = Activity.compute(samples, rate)
     partial_file = partial_path(job.workspace.lead_activity)
     activity.save(partial_file)
@@ -513,7 +513,7 @@ def _transcribe_into(job: Job, ctx: TaskContext, model: Any, audio: Path, target
 
 def _transcribe(job: Job, ctx: TaskContext) -> Any:
     model = _whisper_model(job, ctx, "load_whisper")
-    _transcribe_into(job, ctx, model, job.workspace.karaoke_lead, job.workspace.transcript_json)
+    _transcribe_into(job, ctx, model, job.workspace.lead, job.workspace.transcript_json)
     if job.config.mix_vote or job.config.backing_vocals:
         return model  # handed over to transcribe_mix or transcribe_backing, which frees it
     del model
@@ -534,7 +534,7 @@ def _separate_backing(job: Job, ctx: TaskContext) -> None:
 
     ws, cfg = job.workspace, job.config
     rest = ws.stems_dir / "backing_without_vocals.wav"  # the model's other half: not wanted, not left lying about
-    separation.separate(ws.karaoke_backing, model=DEFAULT_BACKING_MODEL, model_dir=cfg.model_dir,
+    separation.separate(ws.backing, model=DEFAULT_BACKING_MODEL, model_dir=cfg.model_dir,
                         stems={"vocals": ws.backing_vocals, "instrumental": rest}, overlap=cfg.separation_overlap,
                         fp16=cfg.fp16, verbose=cfg.verbose, on_stage=ctx.note)
     rest.unlink(missing_ok=True)
@@ -576,7 +576,7 @@ def _force_align(job: Job, ctx: TaskContext) -> None:
     # the backing lines on the backing vocals, when there are, the others on the lead
     split = backing_activity is not None and ws.backing_vocals.exists()
     results = {}
-    for audio, which in ((ws.karaoke_lead, False if split else None), (ws.backing_vocals, True)):
+    for audio, which in ((ws.lead, False if split else None), (ws.backing_vocals, True)):
         if which is True and not split:
             continue
         requests = [((number, index, positions), line_words, window)
@@ -727,7 +727,7 @@ def _render(job: Job, ctx: TaskContext) -> str:
     source = _source_info(job)
     gain = None
     if job.config.match_loudness or job.config.lift_quiet:
-        song, karaoke = _song_level(job), media.loudness(ws.karaoke_backing, binary=job.ffmpeg.path)
+        song, karaoke = _song_level(job), media.loudness(ws.backing, binary=job.ffmpeg.path)
         _, gain = level.gains(song, karaoke, match=job.config.match_loudness, lift_quiet=job.config.lift_quiet,
                               floor=job.config.quiet_floor)
         if job.config.match_loudness and song is not None and karaoke is not None:
@@ -738,8 +738,8 @@ def _render(job: Job, ctx: TaskContext) -> str:
         subtitles = None
     else:
         subtitles = ws.debug_subtitles if job.config.debug_ass else ws.subtitles
-    encoding = media.render(ws.video, ws.karaoke_backing, subtitles, job.output_video, tool=job.ffmpeg,
-                            source=source, lead=ws.karaoke_lead, lead_volume=job.config.lead_volume,
+    encoding = media.render(ws.video, ws.backing, subtitles, job.output_video, tool=job.ffmpeg,
+                            source=source, lead=ws.lead, lead_volume=job.config.lead_volume,
                             darken=job.config.darken, target_height=job.config.target_height,
                             browser=job.config.browser_friendly, duration=job.info.duration, gain_db=gain,
                             on_progress=ctx.progress)

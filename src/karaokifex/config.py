@@ -49,7 +49,7 @@ class Config:
     quiet_floor: float = -12.0  # LUFS
     debug_ass: bool = False  # render with words coloured by timing source
     keep_temp: bool = False  # keep every temporary file (they are deleted after a successful run)
-    keep_lead: bool = False  # keep the lead vocals (stems/karaoke_lead.wav) when the temporary files are deleted
+    keep_lead: bool = False  # keep the lead vocals (stems/lead.wav) when the temporary files are deleted
     keep_source: bool = False  # also render the original video with its own sound, like the karaoke video
     keep_download: bool = False  # keep the download as it came (source.mkv): the best there is, never re-encoded
     force: bool = False

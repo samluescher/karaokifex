@@ -51,14 +51,28 @@ def test_the_tuning_is_read_from_the_small_reference_before_the_backing_stem(tmp
     import soundfile as sf
     assert melody.backing_tuning(tmp_path) is None                                    # no backing to read
     (tmp_path / "stems").mkdir()
-    sf.write(str(tmp_path / "stems" / "karaoke_backing.wav"), tones(-20.0), 16000)
+    sf.write(str(tmp_path / "stems" / "backing.wav"), tones(-20.0), 16000)
     assert melody.backing_tuning(tmp_path)[0] == pytest.approx(-20.0, abs=2.0)
     sf.write(str(tmp_path / "reference.flac"), tones(30.0), 16000, format="FLAC")
     cents, conf = melody.backing_tuning(tmp_path)
     assert cents == pytest.approx(30.0, abs=2.0) and conf > 0.5                         # the reference is the one read
-    sf.write(str(tmp_path / "stems" / "karaoke_backing.wav"), np.repeat(tones(12.0)[:, None], 2, axis=1), 16000)
+    sf.write(str(tmp_path / "stems" / "backing.wav"), np.repeat(tones(12.0)[:, None], 2, axis=1), 16000)
     (tmp_path / "reference.flac").unlink()
     assert melody.backing_tuning(tmp_path)[0] == pytest.approx(12.0, abs=2.0)           # a stem in stereo is mixed down
+
+
+def test_the_backing_stem_is_found_under_its_older_name_and_as_ogg(tmp_path):
+    stems = tmp_path / "stems"
+    stems.mkdir()
+    assert melody.backing_stem(tmp_path) == stems / "backing.wav"                        # none there: the name a make gives it
+    (stems / "karaoke_backing.ogg").write_bytes(b"x")
+    assert melody.backing_stem(tmp_path) == stems / "karaoke_backing.ogg"                # a song made before the rename, kept as Ogg
+    (stems / "karaoke_backing.wav").write_bytes(b"x")
+    assert melody.backing_stem(tmp_path) == stems / "karaoke_backing.wav"                # its WAV first
+    (stems / "backing.ogg").write_bytes(b"x")
+    assert melody.backing_stem(tmp_path) == stems / "backing.ogg"                        # the stem's own name before the older one
+    (stems / "backing.wav").write_bytes(b"x")
+    assert melody.backing_stem(tmp_path) == stems / "backing.wav"
 
 
 def test_the_key_and_the_words_are_read_from_the_songs_folder(tmp_path):

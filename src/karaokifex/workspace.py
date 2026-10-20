@@ -66,14 +66,14 @@ class Workspace:
         return self.root / "stems"
 
     @property
-    def karaoke_backing(self) -> Path:
-        """Instrumental plus backing vocals — the karaoke audio track."""
-        return self.stems_dir / "karaoke_backing.wav"
+    def backing(self) -> Path:
+        """The backing: the song minus its lead vocals (instrumental plus backing singers), the karaoke audio track."""
+        return self.stems_dir / "backing.wav"
 
     @property
-    def karaoke_lead(self) -> Path:
-        """Lead vocals only — what whisperx transcribes."""
-        return self.stems_dir / "karaoke_lead.wav"
+    def lead(self) -> Path:
+        """The lead vocals alone — what whisperx transcribes."""
+        return self.stems_dir / "lead.wav"
 
     @property
     def lead_activity(self) -> Path:
@@ -185,7 +185,7 @@ class Workspace:
         """
         videos = (self.final_video, self.debug_video, self.plain_video, self.original_video)
         earlier_renders = [path for video in videos for path in self.root.glob(f"{glob.escape(video.stem)}.*")]
-        keep = {self.final_video, self.subtitles, self.karaoke_backing, self.backing_vocals, self.lyrics_json, self.timings_json, self.swiss_lyrics,
+        keep = {self.final_video, self.subtitles, self.backing, self.backing_vocals, self.lyrics_json, self.timings_json, self.swiss_lyrics,
                 self.info_json, self.metadata_json, self.song_json, self.quality_json,
                 self.root / "tab-source.json", self.root / "tab-check.json"}
         return frozenset(keep | {p for p in earlier_renders if ".partial." not in p.name})

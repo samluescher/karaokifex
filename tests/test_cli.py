@@ -91,10 +91,10 @@ def test_debug_ass_needs_burned_in_lyrics(fake_run):
 
 def test_temp_files_are_deleted_without_asking(fake_run):
     ws = fake_run["workspace"]
-    ws.karaoke_lead.write_text("temp")
+    ws.lead.write_text("temp")
     result = CliRunner().invoke(cli.main, [URL])
     assert result.exit_code == 0, result.output
-    assert not ws.source.exists() and not ws.karaoke_lead.exists()
+    assert not ws.source.exists() and not ws.lead.exists()
     assert ws.final_video.exists()
 
 

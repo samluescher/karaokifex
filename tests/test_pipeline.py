@@ -241,7 +241,7 @@ def test_separation_runs_each_model_and_resumes_after_the_last_one_done(job, mon
         sf.write(job.workspace.stems_dir / name, np.zeros((4410, 2), dtype=np.float32), 44100, subtype="FLOAT")
     pipeline._separate_karaoke(ensemble, type("Ctx", (), {"note": lambda self, text: None})())
     assert ran == ["a.ckpt", "c.ckpt"]
-    assert job.workspace.karaoke_backing.exists() and job.workspace.karaoke_lead.exists()
+    assert job.workspace.backing.exists() and job.workspace.lead.exists()
 
 
 def test_a_song_made_again_from_its_kept_download_asks_the_site_nothing(tmp_path, monkeypatch):

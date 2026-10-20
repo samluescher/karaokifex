@@ -30,7 +30,7 @@ def test_partial_path():
 
 def test_cleanup_keeps_artifacts(tmp_path):
     ws = Workspace.create(tmp_path, "Artist - Song")
-    temp = [ws.source, ws.audio, ws.video, ws.karaoke_lead, ws.transcript_json]
+    temp = [ws.source, ws.audio, ws.video, ws.lead, ws.transcript_json]
     for path in [*temp, *ws.artifacts()]:
         path.write_text("x")
     assert set(ws.temp_files()) == set(temp)
@@ -65,10 +65,10 @@ def test_cleanup_keeps_the_download_when_asked(tmp_path):
 def test_clean_up_keeps_the_lead_when_asked(tmp_path):
     from karaokifex.cli import clean_up
     ws = Workspace.create(tmp_path, "Artist - Song")
-    for path in (ws.source, ws.audio, ws.karaoke_lead):
+    for path in (ws.source, ws.audio, ws.lead):
         path.write_text("x")
     clean_up(ws, keep_temp=False, keep_download=True, keep_lead=True)
-    assert ws.source.exists() and ws.karaoke_lead.exists()
+    assert ws.source.exists() and ws.lead.exists()
     assert not ws.audio.exists()
 
 
@@ -85,7 +85,7 @@ def test_cleanup_keeps_karaoke_videos_from_earlier_runs(tmp_path):
 
 def test_cleanup_removes_empty_folders(tmp_path):
     ws = Workspace.create(tmp_path, "Artist - Song")
-    ws.karaoke_lead.write_text("x")
+    ws.lead.write_text("x")
     ws.cleanup()
     assert not ws.stems_dir.exists()
     assert ws.root.exists()

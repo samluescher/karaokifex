@@ -61,7 +61,7 @@ uv run karaokifex "https://www.youtube.com/watch?v=..."
 | `palette`          | only with `--palette`: the video's dominant colours (k-means over 32 sampled frames) | `metadata.json`        |
 | `describe`         | only with `--describe`: MusicBrainz's album, year, genres, writers, language, artist's country | `song.json` |
 | `quality`          | only with `--quality`: the download's and the renders' resolution, frame rate, codecs, bitrates | `quality.json` |
-| `separate_karaoke` | audio-separator, `mel_band_roformer_karaoke_gabox.ckpt` (or several, averaged); the backing is the song minus the lead | `stems/karaoke_backing.wav`, `stems/karaoke_lead.wav` |
+| `separate_karaoke` | audio-separator, `mel_band_roformer_karaoke_gabox.ckpt` (or several, averaged); the backing is the song minus the lead | `stems/backing.wav`, `stems/lead.wav` |
 | `lyrics`           | lrclib.net, up to 3 versions (the one that fits the audio wins) | `lyrics.json`                               |
 | `load_whisper`     | whisperx model load (runs early, while everything else works)   | –                                           |
 | `vocal_activity`   | energy envelope of the lead vocals: when someone is singing     | `stems/lead_activity.npz`                   |
