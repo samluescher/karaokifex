@@ -48,6 +48,37 @@ def test_task_graph_is_valid_and_wired(job):
     assert "original" not in tasks
 
 
+def test_retime_times_again_from_the_kept_stems_and_nothing_else(job):
+    # the song made before kept its lead and backing vocals (and no transcripts): whisper hears them again, nothing is
+    # downloaded, separated or rendered, and the alignment runs anew
+    job.workspace.lead.write_bytes(b"lead")
+    job.workspace.backing_vocals.write_bytes(b"backing")
+    tasks = tasks_of(replace(job, config=replace(job.config, retime=True, backing_vocals=True)))
+    assert set(tasks) == {"lyrics", "load_whisper", "vocal_activity", "transcribe", "backing_activity", "transcribe_backing",
+                          "force_align", "subtitles"}
+    assert set(tasks["transcribe"].deps) == {"load_whisper", "lyrics"}
+    assert set(tasks["subtitles"].deps) == {"lyrics", "transcribe", "vocal_activity", "force_align", "transcribe_backing"}
+    # what was heard and when the voices are audible stand through the forced run where their files are there
+    assert all(tasks[name].keep for name in ("lyrics", "load_whisper", "vocal_activity", "transcribe", "transcribe_backing"))
+    assert not tasks["force_align"].keep and not tasks["subtitles"].keep
+    # without the backing vocals kept, the lead alone
+    job.workspace.backing_vocals.unlink()
+    tasks = tasks_of(replace(job, config=replace(job.config, retime=True, backing_vocals=True)))
+    assert "transcribe_backing" not in tasks and set(tasks["force_align"].deps) == {"lyrics", "transcribe", "vocal_activity"}
+
+
+def test_retime_needs_the_song_made_before(tmp_path):
+    config = Config(url="", artist="Artist", song="Song", output_dir=tmp_path, retime=True)
+    with pytest.raises(ValueError, match="info.json"):
+        pipeline.retimed_song(config)
+    ws = Workspace.create(tmp_path, "Artist - Song")
+    ws.info_json.write_text(json.dumps(VideoInfo(id="x", title="t", duration=1).to_dict()), encoding="utf-8")
+    with pytest.raises(ValueError, match="lead"):
+        pipeline.retimed_song(config)
+    ws.lead.write_bytes(b"lead")
+    assert pipeline.retimed_song(config).id == "x"
+
+
 def test_keep_source_renders_the_original_in_the_output_format(job):
     job = replace(job, config=replace(job.config, keep_source=True, browser_friendly=True))
     tasks = tasks_of(job)

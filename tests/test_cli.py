@@ -108,6 +108,27 @@ def test_keep_source_keeps_the_original_instead_of_the_download(fake_run):
     assert "Original" in result.output
 
 
+def test_keep_transcripts_keeps_what_was_heard(fake_run):
+    ws = fake_run["workspace"]
+    ws.transcript_json.write_text("heard")
+    ws.lead_activity.write_text("voiced")
+    ws.forced_json.write_text("forced")
+    result = CliRunner().invoke(cli.main, [URL, "--keep-transcripts"])
+    assert result.exit_code == 0, result.output
+    assert ws.transcript_json.exists() and ws.lead_activity.exists()
+    assert not ws.forced_json.exists() and not ws.source.exists()
+
+
+def test_retime_names_the_song_and_needs_no_url(fake_run):
+    result = CliRunner().invoke(cli.main, ["--retime"])
+    assert result.exit_code != 0 and "-a and -s" in result.output
+    result = CliRunner().invoke(cli.main, ["--retime", "-a", "Artist", "-s", "Song"])
+    assert result.exit_code == 0, result.output
+    assert fake_run["config"].retime is True and fake_run["config"].force is True
+    result = CliRunner().invoke(cli.main, [])
+    assert result.exit_code != 0 and "URL" in result.output
+
+
 def test_keep_temp_keeps_everything(fake_run):
     result = CliRunner().invoke(cli.main, [URL, "--keep-temp"])
     assert result.exit_code == 0, result.output

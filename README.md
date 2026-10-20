@@ -88,8 +88,15 @@ keeps the original: the video with its own sound (vocals and all), as `<Artist -
 It is made like the karaoke video, in the same format and resolution (an MP4 with `--browser-friendly`),
 and its audio is copied when that format takes it. The raw download (`source.mkv`) is deleted unless
 `--keep-download` keeps it: the best video and sound there were, merged into one file and never
-re-encoded, which `quality.json` then names (`source.file`, and `reencoded: false`). `--keep-temp` keeps
-every file.
+re-encoded, which `quality.json` then names (`source.file`, and `reencoded: false`). `--keep-lead` keeps the
+separated lead vocals (`stems/lead.wav`), `--keep-transcripts` what whisper heard and when the voices are
+audible (`transcript*.json`, `stems/*_activity.npz`). `--keep-temp` keeps every file.
+
+With those kept, `--retime -a Artist -s Song` times the lyrics of a song made before again, in its folder:
+nothing is downloaded, separated or rendered; whisper hears the kept stems again only where their
+transcripts were not kept (seconds on the CPU where they were), and the lyrics are placed and aligned anew,
+`timings.json` and the ASS files written again. That is how a library catches up with a change to the timing
+without separating every song again.
 
 ### How the words get their timing
 

@@ -117,7 +117,10 @@ def prepare(config: Config) -> Job:
     token = current_task.set("probe")
     try:
         info = kept_download(config)
-        if info:
+        if config.retime:
+            info = retimed_song(config)
+            log.info("timed again from the stems kept in its folder: nothing downloaded or separated")
+        elif info:
             log.info("made again from its kept download and details: %s not asked", config.url)
         else:
             log.info("looking up %s", config.url)
@@ -132,9 +135,23 @@ def prepare(config: Config) -> Job:
         log.info("“%s” (%s) → %s – %s", info.title, _format_length(info.duration), artist, song)
         log.info("working folder: %s · device: %s", workspace.root, device)
         log.info("ffmpeg: %s · %s", ffmpeg.path, ffmpeg.describe())
-        return Job(config, workspace, info, artist, song, device, ffmpeg, kept=bool(kept_download(config)))
+        return Job(config, workspace, info, artist, song, device, ffmpeg, kept=bool(kept_download(config)) or config.retime)
     finally:
         current_task.reset(token)
+
+
+def retimed_song(config: Config) -> VideoInfo:
+    """The details (info.json) of the song --retime times again, from its folder (-a and -s), which must hold its lead
+    vocals (stems/lead.wav); with --backing-vocals, the backing vocals too (stems/backing_vocals.wav) or they are left out."""
+    root = config.output_dir / sanitize_name(f"{config.artist} - {config.song}")
+    workspace = Workspace(root, f"{config.artist} - {config.song}")
+    try:
+        info = VideoInfo.from_dict(json.loads(workspace.info_json.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"--retime: no details of the song in {root} (info.json): it was not made here") from error
+    if not workspace.lead.exists():
+        raise ValueError(f"--retime: no lead vocals in {root} (stems/lead.wav, kept with --keep-lead): nothing to hear again")
+    return info
 
 
 def kept_download(config: Config) -> VideoInfo | None:
@@ -174,6 +191,8 @@ def canonical_names(info: VideoInfo, artist: str | None, song: str | None, guess
 
 
 def build_tasks(job: Job) -> list[Task]:
+    if job.config.retime:
+        return retime_tasks(job)
     ws, cfg = job.workspace, job.config
     transcripts = (ws.transcript_json, ws.transcript_mix_json) if cfg.mix_vote else (ws.transcript_json,)
     tasks = [
@@ -245,6 +264,44 @@ def build_tasks(job: Job) -> list[Task]:
              description="lyrics + word timings → karaoke ASS"),
         Task("render", partial(_render, job), deps=render_deps, outputs=(job.output_video,), gpu=job.ffmpeg.gpu,
              description=render_description),
+    ]
+    return tasks
+
+
+def retime_tasks(job: Job) -> list[Task]:
+    """The tasks of --retime: the words timed again from the stems the song's folder keeps, nothing downloaded, separated
+    or rendered. Whisper and the activities stand where their files are there (Task.keep, --keep-transcripts kept them)
+    and run again where not; the forced alignment and the subtitles always run again (the run is forced)."""
+    ws, cfg = job.workspace, job.config
+    tasks = [
+        Task("lyrics", partial(_lyrics, job), outputs=(ws.lyrics_json,), description="lrclib lookup",
+             keep=not cfg.fresh_lyrics),
+        Task("load_whisper", partial(_load_whisper, job), outputs=(ws.transcript_json,), keep=True,
+             description=f"whisperx {cfg.whisper_model}"),
+        Task("vocal_activity", partial(_vocal_activity, job), outputs=(ws.lead_activity,), keep=True,
+             description="when the lead vocals are audible (the kept lead)"),
+        Task("transcribe", partial(_transcribe, job), deps=("load_whisper", "lyrics"), outputs=(ws.transcript_json,),
+             gpu=True, model=True, keep=True, description="whisperx on the kept lead vocals, unless heard before"),
+    ]
+    backing = ()
+    if cfg.backing_vocals and ws.backing_vocals.exists():
+        tasks += [
+            Task("backing_activity", partial(_backing_activity, job), outputs=(ws.backing_activity,), keep=True,
+                 description="when the backing vocals are audible (the kept backing vocals)"),
+            Task("transcribe_backing", partial(_transcribe_backing, job),
+                 deps=("backing_activity", "load_whisper", "lyrics", "transcribe"),
+                 outputs=(ws.transcript_backing_json,), gpu=True, model=True, keep=True,
+                 description="whisperx on the kept backing vocals, unless heard before"),
+        ]
+        backing = ("transcribe_backing",)
+    elif cfg.backing_vocals:
+        log.info("no backing vocals kept in the folder (stems/backing_vocals.wav): timed from the lead alone")
+    tasks += [
+        Task("force_align", partial(_force_align, job), deps=("lyrics", "transcribe", "vocal_activity") + backing,
+             outputs=(ws.forced_json,), gpu=True, model=True, description="wav2vec2 alignment of the known lyrics"),
+        Task("subtitles", partial(_subtitles, job), deps=("lyrics", "transcribe", "vocal_activity", "force_align") + backing,
+             outputs=(ws.subtitles, ws.debug_subtitles, ws.timings_json),
+             description="lyrics + word timings → karaoke ASS"),
     ]
     return tasks
 
@@ -538,6 +595,14 @@ def _separate_backing(job: Job, ctx: TaskContext) -> None:
                         stems={"vocals": ws.backing_vocals, "instrumental": rest}, overlap=cfg.separation_overlap,
                         fp16=cfg.fp16, verbose=cfg.verbose, on_stage=ctx.note)
     rest.unlink(missing_ok=True)
+    _backing_activity(job, ctx)
+
+
+def _backing_activity(job: Job, ctx: TaskContext) -> None:
+    """When the backing vocals are audible, from their stem (as _vocal_activity does for the lead)."""
+    import soundfile
+
+    ws = job.workspace
     samples, rate = soundfile.read(str(ws.backing_vocals), dtype="float32")
     activity = Activity.compute(samples, rate)
     partial_file = partial_path(ws.backing_activity)

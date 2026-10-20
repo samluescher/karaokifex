@@ -124,6 +124,12 @@ class Workspace:
         return self.root / "transcript_mix.json"
 
     @property
+    def transcripts(self) -> list[Path]:
+        """What whisper heard and when the voices are audible: kept with --keep-transcripts, so a --retime needs no GPU."""
+        return [self.transcript_json, self.transcript_noprompt_json, self.transcript_backing_json,
+                self.transcript_backing_noprompt_json, self.transcript_mix_json, self.lead_activity, self.backing_activity]
+
+    @property
     def forced_json(self) -> Path:
         """Time map, line windows and forced-alignment results per lyrics candidate."""
         return self.root / "forced.json"

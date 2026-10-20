@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 # The live task board replaces the libraries' own progress bars, which would garble it.
 os.environ.setdefault("TQDM_DISABLE", "1")
@@ -31,7 +32,7 @@ log = logging.getLogger("karaokifex")
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100})
-@click.argument("url")
+@click.argument("url", required=False)
 @click.option("-a", "--artist", help="Artist name. Default: taken from the video metadata or title.")
 @click.option("-s", "--song", help="Song name. Default: taken from the video metadata or title.")
 @click.option("--musicbrainz/--no-musicbrainz", default=True, show_default=True,
@@ -123,6 +124,15 @@ log = logging.getLogger("karaokifex")
 @click.option("--keep-lead", is_flag=True,
               help="Keep the lead vocals, separated from the song (stems/lead.wav), when the temporary "
                    "files are deleted.")
+@click.option("--keep-transcripts", is_flag=True,
+              help="Keep what whisper heard (transcript*.json) and when the voices are audible (stems/*_activity.npz) "
+                   "when the temporary files are deleted: a later --retime then needs no whisper, seconds on the CPU.")
+@click.option("--retime", is_flag=True,
+              help="Time the lyrics again for a song made before: -a and -s name its folder under --output-dir, which "
+                   "holds the video's details (info.json), the lead vocals kept with --keep-lead (stems/lead.wav) and, "
+                   "with --backing-vocals, the backing vocals (stems/backing_vocals.wav). No download, separation or "
+                   "render: whisper hears the stems again unless their transcripts were kept (--keep-transcripts), "
+                   "and the lyrics are placed and aligned anew. URL may be left out.")
 @click.option("--autodelete", is_flag=True, hidden=True, expose_value=False,
               help="No effect: temporary files are now deleted by default.")
 @click.option("--lyrics-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
@@ -133,11 +143,17 @@ log = logging.getLogger("karaokifex")
 @click.option("--fresh-lyrics", is_flag=True, help="Ask lrclib for the lyrics again, even with a lyrics.json there.")
 @click.option("-v", "--verbose", is_flag=True, help="Show debug output, including the libraries' logs.")
 @click.version_option(__version__, "-V", "--version")
-def main(url: str, **options: object) -> None:
+def main(url: str | None, **options: object) -> None:
     """Turn the YouTube video at URL into a karaoke video with word-by-word highlighted lyrics."""
-    config = Config(url=url, **options)  # type: ignore[arg-type]
+    config = Config(url=url or "", **options)  # type: ignore[arg-type]
     if config.debug_ass and not config.burn_lyrics:
         raise click.UsageError("--debug-ass burns in the lyrics; it can't be combined with --no-burn-lyrics.")
+    if config.retime:
+        if not (config.artist and config.song):
+            raise click.UsageError("--retime needs -a and -s: the folder of the song made before.")
+        config = replace(config, force=True)  # the words timed anew, whatever timings are there; the kept stays (Task.keep)
+    elif not url:
+        raise click.UsageError("Missing argument 'URL'.")
     setup_logging(config.verbose)
     try:
         result = run_pipeline(config)
@@ -153,7 +169,7 @@ def main(url: str, **options: object) -> None:
         console.print("Temporary files were kept, so running the same command again resumes where it stopped.")
         raise SystemExit(1)
     clean_up(result.job.workspace, keep_temp=config.keep_temp, keep_download=config.keep_download,
-             keep_lead=config.keep_lead)
+             keep_lead=config.keep_lead, keep_transcripts=config.keep_transcripts)
 
 
 def show_result(result: PipelineResult) -> None:
@@ -174,10 +190,12 @@ def show_result(result: PipelineResult) -> None:
     print_summary(result.ok, details)
 
 
-def clean_up(workspace: Workspace, *, keep_temp: bool, keep_download: bool = False, keep_lead: bool = False) -> None:
+def clean_up(workspace: Workspace, *, keep_temp: bool, keep_download: bool = False, keep_lead: bool = False,
+             keep_transcripts: bool = False) -> None:
     """Delete the temporary files of a successful run, unless --keep-temp asks to keep them; the download
-    stays with --keep-download, the lead vocals with --keep-lead."""
-    keep = ([workspace.source] if keep_download else []) + ([workspace.lead] if keep_lead else [])
+    stays with --keep-download, the lead vocals with --keep-lead, the transcripts and activities with --keep-transcripts."""
+    keep = ([workspace.source] if keep_download else []) + ([workspace.lead] if keep_lead else []) \
+        + (workspace.transcripts if keep_transcripts else [])
     temp_files = workspace.temp_files(keep)
     if not temp_files:
         return
