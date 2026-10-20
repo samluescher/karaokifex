@@ -119,6 +119,17 @@ def test_keep_transcripts_keeps_what_was_heard(fake_run):
     assert not ws.forced_json.exists() and not ws.source.exists()
 
 
+def test_retime_leaves_the_folder_s_other_files_alone(fake_run):
+    ws = fake_run["workspace"]
+    (ws.root / "analysis.json").write_text("theirs")
+    ws.forced_json.write_text("forced")
+    ws.transcript_json.write_text("heard")
+    result = CliRunner().invoke(cli.main, ["--retime", "-a", "Artist", "-s", "Song"])
+    assert result.exit_code == 0, result.output
+    assert (ws.root / "analysis.json").exists() and ws.source.exists() and ws.transcript_json.exists()
+    assert not ws.forced_json.exists()
+
+
 def test_retime_names_the_song_and_needs_no_url(fake_run):
     result = CliRunner().invoke(cli.main, ["--retime"])
     assert result.exit_code != 0 and "-a and -s" in result.output

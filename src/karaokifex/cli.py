@@ -168,6 +168,11 @@ def main(url: str | None, **options: object) -> None:
     if not result.ok:
         console.print("Temporary files were kept, so running the same command again resumes where it stopped.")
         raise SystemExit(1)
+    if config.retime:
+        # a folder made before is someone's library: only what this run itself made goes (the forced alignment; the kept
+        # transcripts stay), never the files beside karaokifex's own
+        result.job.workspace.forced_json.unlink(missing_ok=True)
+        return
     clean_up(result.job.workspace, keep_temp=config.keep_temp, keep_download=config.keep_download,
              keep_lead=config.keep_lead, keep_transcripts=config.keep_transcripts)
 
