@@ -520,11 +520,15 @@ def test_a_backing_part_left_out_of_forced_alignment_keeps_its_own_timing():
     assert [w.source for w in result] == ["forced", "forced", "whisper", "whisper"]
 
 
-def test_a_backing_part_sung_over_the_lead_keeps_its_times():
+def test_a_backing_part_sung_over_the_lead_advances_after_it():
+    # the backing answers over the lead's held last word: one timeline, its words follow the lead's (the stage lights one
+    # word at a time), the lead's word cut where they begin
     lines = [LyricLine(None, "one two three (four five six)")]
     lead = heard(("one", 1.0, 1.4), ("two", 1.5, 1.9), ("three", 2.0, 4.0))
     forced = [[TimedWord("one", 1.0, 1.4, 0.9), TimedWord("two", 1.5, 1.9, 0.9), TimedWord("three", 2.0, 4.0, 0.9),
                TimedWord("four", 2.5, 2.8, 0.9), TimedWord("five", 2.9, 3.2, 0.9), TimedWord("six", 3.3, 3.8, 0.9)]]
     words = all_words(align_lyrics(lines, lead, forced=forced))
-    assert [round(w.start, 2) for w in words] == [1.0, 1.5, 2.0, 2.5, 2.9, 3.3]
-    assert words[2].end == pytest.approx(4.0)
+    starts = [w.start for w in words]
+    assert starts == sorted(starts) and all(a.end <= b.start for a, b in zip(words, words[1:]))
+    assert [round(w.start, 2) for w in words[:3]] == [1.0, 1.5, 2.0]
+    assert words[3].start >= words[2].end
