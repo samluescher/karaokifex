@@ -66,7 +66,7 @@ from karaokifex.workspace import Workspace, partial_path, sanitize_name
 
 log = logging.getLogger(__name__)
 
-LOW_MATCH_WARNING = 0.3  # below this quality the lyrics are probably a different version of the song
+LOW_MATCH_WARNING = 0.3  # fewer of the words heard than this: the lyrics are probably a different version of the song
 
 
 @dataclass(frozen=True)
@@ -661,12 +661,12 @@ def _subtitles(job: Job, ctx: TaskContext) -> str:
         chosen, alignment = ranked[0]
         # what's sung where the lyrics have nothing (a rap they left out), from what was heard there
         lead_words = [w for w in words if w.source != BACKING]  # what the lead sings that the lyrics lack
-        lines = fill_unlyricked(alignment.lines, lead_words, activity)
+        lines = fill_unlyricked(alignment.lines, lead_words, activity, chosen.lines)
         if len(lines) > len(alignment.lines):
             log.info("%d lines added from the transcription where the lyrics have none", len(lines) - len(alignment.lines))
         sources = Counter(word.source for line in lines for word in line.words)
         log.info("word timing sources: %s", ", ".join(f"{name} {count}" for name, count in sources.most_common()))
-        if alignment.quality < LOW_MATCH_WARNING:
+        if alignment.match_ratio < LOW_MATCH_WARNING:
             log.warning("the lyrics fit the audio poorly — they may belong to a different version of the song")
         description = lyrics.describe(chosen)
     else:

@@ -12,6 +12,7 @@ from karaokifex.timing import (
     fill_unlyricked,
     filter_heard,
     forced_requests,
+    heard_loops,
     lines_from_words,
     merge_heard,
     normalize,
@@ -234,6 +235,81 @@ def test_blocks_the_video_sings_in_another_order_come_back_in_its_order():
     assert [line.text for line in result.lines] == [text for text, _ in video]
     assert [line.start for line in result.lines] == pytest.approx([start for _, start in video], abs=0.05)
     assert result.cut == 0
+
+
+VERSE = ["red kite flies high", "blue boat sails far", "green tree grows tall"]
+CHORUS = ["old clock ticks slow", "warm bread smells good", "cold rain falls down", "small dog barks loud"]
+VERSE_TWO = ["bright star shines on", "long road runs west", "deep well holds cool"]
+
+
+def looped(text: str, start: float, copies: int, every: float = 3.0) -> list[TimedWord]:
+    """Whisper looping: `text` written `copies` times from `start`, one every `every` seconds."""
+    return [TimedWord(word, start + every * n + 0.4 * k, start + every * n + 0.4 * k + 0.3, 0.6)
+            for n in range(copies) for k, word in enumerate(text.split())]
+
+
+def test_heard_loops_flags_one_phrase_over_and_over_where_the_lyrics_differ():
+    lines = [LyricLine(4.0 * i, text) for i, text in enumerate([*VERSE, *CHORUS, *VERSE_TWO])]
+    verse, _ = sung_lines(*[(text, 4.0 * i) for i, text in enumerate(VERSE)])
+    loop = looped(CHORUS[0], 12.0, 4)
+    words = [*verse, *loop, *sung_lines(*[(text, 28.0 + 4.0 * i) for i, text in enumerate(VERSE_TWO)])[0]]
+    flagged = heard_loops(words, lines)
+    assert flagged == frozenset(range(len(verse), len(verse) + len(loop)))
+    # a phrase the lyrics sing as often in a row is sung so: "na na na na" four times over is no loop
+    chant = [LyricLine(0.0, "na na na na na na na na"), LyricLine(4.0, "na na na na na na na na"), LyricLine(8.0, "then we go home")]
+    assert heard_loops(looped("na na na na", 0.0, 4, every=1.6), chant) == frozenset()
+    # two copies are no loop either
+    assert heard_loops(looped(CHORUS[0], 12.0, 2), lines) == frozenset()
+
+
+def test_a_chorus_whisper_loops_on_keeps_the_clock_and_cuts_nothing():
+    # the lead sings verse, chorus (four different lines) and a second verse, the video 2 s behind lrclib; whisper
+    # hears the verses and writes the first chorus line over and over through the chorus
+    lines = [LyricLine(4.0 * i, text) for i, text in enumerate([*VERSE, *CHORUS, *VERSE_TWO])]
+    video = [(text, 2.0 + 4.0 * i) for i, text in enumerate([*VERSE, *CHORUS, *VERSE_TWO])]
+    heard_verses = [w for text, start in video if text not in CHORUS for w in sung_lines((text, start))[0]]
+    words = sorted([*heard_verses, *looped(CHORUS[0], 14.0, 5)], key=lambda w: w.start)
+    activity = voice(60, (2.0, 12.0), (14.0, 30.0), (30.0, 40.0))  # the chorus sung through, breathy
+    plan = plan_alignment(lines, words, activity, language="en")
+    assert plan.cut == frozenset()
+    assert plan.time_map.corrections == ()
+    assert plan.ignored is not None and len(plan.ignored) == 5 * len(CHORUS[0].split())
+    result = align_lyrics(lines, words, plan=plan, activity=activity, language="en")
+    assert [line.text for line in result.lines] == [text for text, _ in video]
+    assert [line.start for line in result.lines] == pytest.approx([start for _, start in video], abs=0.5)
+    # the looped words make no lines of their own either
+    assert fill_unlyricked(result.lines, words, activity, lines) == result.lines
+
+
+def test_the_prompt_echoed_over_a_chorus_places_nothing_and_cuts_nothing():
+    # whisper hears the first verse, then writes it again (its prompt) where the chorus is sung
+    lines = [LyricLine(4.0 * i, text) for i, text in enumerate([*VERSE, *CHORUS])]
+    video = [(text, 2.0 + 4.0 * i) for i, text in enumerate([*VERSE, *CHORUS])]
+    heard_verse, _ = sung_lines(*[(text, 2.0 + 4.0 * i) for i, text in enumerate(VERSE)])
+    echo, _ = sung_lines(*[(text, 15.0 + 4.0 * i) for i, text in enumerate(VERSE)])
+    words = [*heard_verse, *echo]
+    activity = voice(60, (2.0, 12.0), (14.0, 30.0))  # the chorus sung through
+    plan = plan_alignment(lines, words, activity, language="en")
+    assert plan.cut == frozenset()
+    assert plan.ignored is not None and len(plan.ignored) == len(echo)
+    result = align_lyrics(lines, words, plan=plan, activity=activity, language="en")
+    assert [line.text for line in result.lines] == [text for text, _ in video]
+    assert [line.start for line in result.lines] == pytest.approx([start for _, start in video], abs=0.5)
+
+
+def test_quality_prefers_the_lyrics_version_whose_lines_cover_the_singing():
+    # two versions of the lyrics: one with the bridge the video sings, one without it; whisper hears neither bridge
+    full = [LyricLine(4.0 * i, text) for i, text in enumerate([*VERSE, *CHORUS, *VERSE_TWO])]
+    without = [LyricLine(4.0 * i, text) for i, text in enumerate(VERSE)] + \
+              [LyricLine(4.0 * (i + len(VERSE) + len(CHORUS)), text) for i, text in enumerate(VERSE_TWO)]
+    video = [(text, 2.0 + 4.0 * i) for i, text in enumerate([*VERSE, *CHORUS, *VERSE_TWO])]
+    words = [w for text, start in video if text not in CHORUS for w in sung_lines((text, start))[0]]
+    activity = voice(60, *[(start, start + 2.5) for _, start in video])
+    plans = [plan_alignment(version, words, activity, language="en") for version in (full, without)]
+    assert plans[0].misfit < plans[1].misfit
+    qualities = [align_lyrics(version, words, plan=plan, activity=activity, language="en").quality
+                 for version, plan in zip((full, without), plans)]
+    assert qualities[0] > qualities[1]
 
 
 def test_a_lead_line_heard_only_in_the_backing_vocals_is_not_placed_there():

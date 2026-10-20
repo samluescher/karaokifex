@@ -20,6 +20,11 @@ keeping lrclib's spacing is free and a jump costs a few words), so a video that
 leaves out a block of identical lines is followed through the cut; with too few
 lines heard it maps lrclib's timeline onto the video's (mapping.py) instead. It
 derives a search window per line and finds lines that were cut from the video.
+What whisper writes where it cannot make the singing out -- one phrase over and
+over (`heard_loops`), its prompt's lines again (`_echoes`) -- places no line and
+times no word: the lines there keep lrclib's clock through the voiced time, and
+the plan's misfit (singing no line covers, lines where no one sings) tells
+between lyrics versions where the words heard cannot.
 The lead-vocal activity (activity.py), when given, vetoes timings: heard words in
 silence are dropped, words don't start in silence, and held notes last until
 the singing stops.
@@ -90,6 +95,13 @@ MIN_PLACED = 3  # fewer placed lines than this: the time map's anchors decide al
 # video_order: a run of this many consecutive lyric lines (one unheard line inside allowed) heard in order among the words the
 # order-keeping path left unused is a block the video sings elsewhere than the lyrics have it; looked for this many times over
 BLOCK_LINES, BLOCK_ROUNDS = 3, 4
+# heard_loops: whisper on a chorus it cannot transcribe writes one phrase over and over: this many copies in a row (the last
+# at most LOOP_SLACK words short), one more than the lyrics ever sing it, of a phrase up to LOOP_PERIOD words long
+LOOP_MIN, LOOP_PERIOD, LOOP_SLACK = 3, 12, 2
+# _echoes: this many consecutive lyric lines (one left out between allowed) heard in the lead again among the words the
+# placed lines left, lines the path placed elsewhere, are whisper echoing its prompt, not the video singing them again
+ECHO_LINES = 3
+CLOCK_SLACK = 1.0  # s: lrclib's clock may put a gap's unheard lines this far over the gap's edges and still fit it
 
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'"})
 # Spellings that differ between lyric sites and whisper; compared with apostrophes and spaces removed.
@@ -111,6 +123,8 @@ class Alignment:
     forced: int = 0  # lyric words timed by forced alignment
     forced_score: float | None = None  # mean forced score over the displayed words
     cut: int = 0  # lyric lines left out because the video doesn't contain them
+    misfit: float = 0.0  # share of the voiced time the lyrics and the voice disagree over (AlignmentPlan.misfit)
+    heard_share: float | None = None  # share of the lead's singing time whose words whisperx heard (with activity)
 
     @property
     def match_ratio(self) -> float:
@@ -118,10 +132,18 @@ class Alignment:
 
     @property
     def quality(self) -> float:
-        """How well these lyrics fit the audio (0–1), for choosing between lyrics versions."""
-        if self.forced_score is None:
-            return self.match_ratio
-        return 0.5 * self.match_ratio + 0.5 * self.forced_score
+        """How well these lyrics fit the audio (0–1), for choosing between lyrics versions.
+
+        The share of the singing whose words were heard (the same singing for every version: a version that leaves
+        a sung bridge out is not more heard for having fewer words; without activity, the share of the words) and
+        the forced alignment's score say how well the lines fit; the misfit takes off what the voice says the lyrics
+        lack or have too much of: a bridge no line of theirs covers, lines where no one sings. Where whisper hears
+        little of a chorus, the misfit alone tells two versions apart.
+        """
+        heard = self.match_ratio if self.heard_share is None else self.heard_share
+        if self.forced_score is not None:
+            heard = 0.5 * heard + 0.5 * self.forced_score
+        return max(0.0, heard - self.misfit)
 
 
 @dataclass(frozen=True)
@@ -132,15 +154,23 @@ class AlignmentPlan:
     starts: tuple[float | None, ...] = ()  # lrclib line starts mapped onto the video
     windows: tuple[Window | None, ...] = ()
     cut: frozenset[int] = frozenset()
+    # heard words (indices into filter_heard's list) that say nothing of which line is sung: whisper looping on a chorus it
+    # cannot transcribe, or echoing its prompt (None: not looked for, as a plan an older version wrote)
+    ignored: frozenset[int] | None = None
+    # share of the lead's voiced time the lyrics and the voice disagree over under this plan (_misfit)
+    misfit: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {"time_map": self.time_map.to_dict(), "starts": list(self.starts),
-                "windows": [None if w is None else list(w) for w in self.windows], "cut": sorted(self.cut)}
+                "windows": [None if w is None else list(w) for w in self.windows], "cut": sorted(self.cut),
+                "ignored": None if self.ignored is None else sorted(self.ignored), "misfit": self.misfit}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AlignmentPlan:
+        ignored = data.get("ignored")
         return cls(TimeMap.from_dict(data["time_map"]), tuple(data["starts"]),
-                   tuple(None if w is None else (w[0], w[1]) for w in data["windows"]), frozenset(data["cut"]))
+                   tuple(None if w is None else (w[0], w[1]) for w in data["windows"]), frozenset(data["cut"]),
+                   None if ignored is None else frozenset(ignored), float(data.get("misfit", 0.0)))
 
 
 @dataclass(frozen=True)
@@ -290,7 +320,10 @@ def plan_alignment(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activ
     tokens = _tokens(kept)
     heard = filter_heard(heard, activity)
     starts = [line.start for line, _ in kept]
+    by_line = [[k for k in range(len(tokens)) if tokens[k].line == index] for index in range(len(kept))]
     synced = any(start is not None for start in starts)
+    # whisper's loops and echoes say that someone sings there, not what: out before anything reads the words
+    ignored, placed, heard = _hallucinated(kept, tokens, by_line, heard, starts, language) if synced else (frozenset(), [], heard)
     time_map, supported = TimeMap(), False
     if synced:
         # Candidate maps: from anchors found without any timing constraint, and from anchors found near the
@@ -310,19 +343,19 @@ def plan_alignment(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activ
         _, time_map, anchors = max(candidates, key=lambda c: c[0])
         supported = time_map.support(anchors) >= MIN_OFFSET_SAMPLES
     mapped = tuple(None if s is None else time_map.map(s) for s in starts)
-    by_line = [[k for k in range(len(tokens)) if tokens[k].line == index] for index in range(len(kept))]
     natural = [sum(tokens[k].natural for k in indices) for indices in by_line]
     backing = frozenset(index for index, (line, _) in enumerate(kept) if is_backing(line.text))
 
     # Where whisper heard the synced lines decides over the map: the map is one line with shifted sections,
     # which can't follow a video that leaves out one of several identical blocks.
     jumped: set[int] = set()
-    if synced and (placed := _place_lines(tokens, by_line, heard, starts, language)) and len(placed) >= MIN_PLACED:
+    if synced and placed and len(placed) >= MIN_PLACED:
         mapped, jumped, time_map = _placed_plan(placed, tokens, by_line, starts, natural, backing, heard,
                                                    activity, language, backing_activity)
         supported = True
     skip = frozenset(jumped)
-    matches = _match_pairs(tokens, heard, _line_windows(mapped), window, language, skip=skip)
+    line_windows = _line_windows(mapped)
+    matches = _drop_strays(tokens, by_line, heard, line_windows, _match_pairs(tokens, heard, line_windows, window, language, skip=skip))
     times = _matched_times(tokens, heard, matches)
     _drop_non_monotonic(times)
     _cohere(tokens, times)
@@ -358,7 +391,179 @@ def plan_alignment(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activ
     # out where the heard lines jump are cut on that evidence alone.
     if (synced and not supported) or len(cut) > MAX_CUT_SHARE * len(kept):
         cut = set()
-    return AlignmentPlan(time_map, mapped, tuple(windows), frozenset(cut | jumped))
+    misfit = _misfit(mapped, natural, cut | jumped, backing, activity) if synced else 0.0
+    return AlignmentPlan(time_map, mapped, tuple(windows), frozenset(cut | jumped), ignored, misfit)
+
+
+def _hallucinated(kept: Sequence[tuple[LyricLine, list[str]]], tokens: Sequence[_Token], by_line: Sequence[list[int]],
+                  heard: Sequence[TimedWord], starts: Sequence[float | None], language: str | None
+                  ) -> tuple[frozenset[int], list[_Place], list[TimedWord]]:
+    """The heard words to ignore (indices into `heard`), the lines placed on the rest, and the rest.
+
+    Whisper on a breathy, layered chorus it cannot transcribe loops one phrase (`heard_loops`) and, prompted with the
+    lyrics, writes lines of them where other lines are sung (`_echoes`). Both say that someone sings there, which the
+    voice activity says anyway, and nothing of which line: they place no line, cost no jump, seed no time-map
+    correction and time no word.
+    """
+    ignored = set(heard_loops(heard, [line for line, _ in kept]))
+    alive = [j for j in range(len(heard)) if j not in ignored]
+    rest = [heard[j] for j in alive]
+    placed = _place_lines(tokens, by_line, rest, starts, language)
+    if echoes := _echoes(tokens, by_line, rest, placed, starts, language):
+        # (the echoed words lie outside the placed lines' words: the path stands, its indices moved up)
+        ignored.update(alive[j] for j in echoes)
+        gone = [sum(j < index for j in echoes) for index in range(len(rest) + 1)]
+        placed = [replace(p, first=p.first - gone[p.first], last=p.last - gone[p.last],
+                          matches=tuple((k, j - gone[j]) for k, j in p.matches)) for p in placed]
+        rest = [w for j, w in enumerate(rest) if j not in echoes]
+    return frozenset(ignored), placed, rest
+
+
+def heard_loops(heard: Sequence[TimedWord], lines: Sequence[LyricLine]) -> frozenset[int]:
+    """Indices into `heard` of whisper looping: one phrase written LOOP_MIN times or more in a row, more often than
+    the lyrics sing it in a stretch that long.
+
+    A chorus whisper cannot make out comes back as the same phrase over and over at a regular spacing, prompted or
+    not, where different lines are sung. A phrase the lyrics themselves sing as often within such a stretch ("Time
+    goes by so slowly" line after line, "na na na na") is sung so and stays. Each transcription's words (the lead's,
+    the backing's: whisper loops on the backing singers' chant as well, "say you love" twenty times over) are looked
+    at apart. A pause of PLACE_PAUSE between two words ends a loop.
+    """
+    kept = [([normalize(word) for word in words], line.start) for line, words in kept_lines(lines)]
+    loops: set[int] = set()
+    for source in {word.source for word in heard}:
+        indices = [j for j, word in enumerate(heard) if word.source == source]
+        norm = [normalize(heard[j].text) for j in indices]
+        for period in range(1, LOOP_PERIOD + 1):
+            k = 0
+            while k + period < len(norm):
+                # words after the first copy that repeat the word `period` before them, each close on the one before it
+                length = 0
+                while (k + period + length < len(norm) and norm[k + length] and norm[k + length] == norm[k + period + length]
+                       and heard[indices[k + period + length]].start - heard[indices[k + period + length - 1]].end <= PLACE_PAUSE):
+                    length += 1
+                copies = LOOP_MIN
+                if length + period >= max(copies * period - LOOP_SLACK, (copies - 1) * period + 1):  # (asked only of a run)
+                    span = heard[indices[k + period + length - 1]].end - heard[indices[k]].start
+                    copies = max(copies, _lyric_copies(kept, norm[k: k + period], span) + 2)
+                if length + period >= max(copies * period - LOOP_SLACK, (copies - 1) * period + 1):
+                    loops.update(indices[k: k + period + length])
+                    k += period + length
+                else:
+                    k += 1
+    return frozenset(loops)
+
+
+def _lyric_copies(lines: Sequence[tuple[list[str], float | None]], phrase: Sequence[str], span: float) -> int:
+    """The most times the lyrics (normalised words and start per line) sing `phrase` in any stretch of lines as long
+    as `span` (and a line more); unsynced lyrics count as one stretch. A line sings the phrase where its words
+    come in order, all but one of them (a doubled "so", the phrase begun at its second word)."""
+    needed = max(1, len(phrase) - max(1, len(phrase) // 5))
+    rotations = [phrase[r:] + phrase[:r] for r in range(len(phrase))]  # (whisper's copies begin where they begin)
+
+    def occurrences(words: Sequence[str], rotation: Sequence[str]) -> int:
+        count, at = 0, 0
+        while at < len(words):
+            found, cursor, last = 0, at, at
+            for word in rotation:
+                hit = next((i for i in range(cursor, len(words)) if _similarity(words[i], word)), None)
+                if hit is not None:
+                    found, cursor, last = found + 1, hit + 1, hit + 1
+            if found >= needed:
+                count, at = count + 1, last
+            else:
+                at += 1
+        return count
+
+    counts = [max(occurrences(_unhyphenated(words), rotation) for rotation in rotations) for words, _ in lines]
+    starts = [start for _, start in lines]
+    if any(start is None for start in starts):
+        return sum(counts)
+    most = 0
+    for i in range(len(lines)):
+        total, j = 0, i
+        while j < len(lines) and starts[j] - starts[i] <= span + 3.0:  # type: ignore[operator]
+            total += counts[j]
+            j += 1
+        most = max(most, total)
+    return most
+
+
+def _unhyphenated(words: Sequence[str]) -> list[str]:
+    """The words with one written as a repeat ("oh-oh-oh-oh", normalised to "ohohohoh") as its parts."""
+    out: list[str] = []
+    for word in words:
+        for size in range(1, len(word) // 2 + 1):
+            if len(word) % size == 0 and word == word[:size] * (len(word) // size):
+                out.extend([word[:size]] * (len(word) // size))
+                break
+        else:
+            out.append(word)
+    return out
+
+
+def _echoes(tokens: Sequence[_Token], by_line: Sequence[list[int]], heard: Sequence[TimedWord],
+            placed: Sequence[_Place], starts: Sequence[float | None], language: str | None) -> set[int]:
+    """Indices into `heard` of lines whisper wrote again where they aren't sung.
+
+    Among the lead's words the placed lines left (the backing singers echo the lead for real), a run of ECHO_LINES
+    consecutive lines or more (one left out between allowed), sung one after the other, that the path placed
+    elsewhere is whisper, prompted with the lyrics, echoing them (the first verse's lines over a chorus it cannot
+    make out), not the video singing them again -- unless the placed lines around the run jump over it: then the
+    video does sing something extra there, and video_order or the gap decides what.
+    """
+    used = {j for p in placed for j in range(p.first, p.last + 1)}
+    free = [j for j in range(len(heard)) if j not in used and heard[j].source != BACKING]  # (the backing echoes the lead)
+    elsewhere = {p.line for p in placed}
+    echoes: set[int] = set()
+    if len(free) < 2 or not elsewhere:
+        return echoes
+    again = _place_lines(tokens, by_line, [heard[j] for j in free], starts, language)
+    runs: list[list[_Place]] = []  # consecutive lines, sung one after the other (no jump between them)
+    for p in again:
+        if runs and runs[-1][-1].line < p.line <= runs[-1][-1].line + 2 and _step_cost(runs[-1][-1], p, starts) < JUMP_COST:
+            runs[-1].append(p)
+        else:
+            runs.append([p])
+    for run in runs:
+        if len(run) < ECHO_LINES or not all(p.line in elsewhere for p in run):
+            continue
+        first, last = free[run[0].first], free[run[-1].last]
+        earlier = max((p for p in placed if p.last < first), key=lambda p: p.last, default=None)
+        later = min((p for p in placed if p.first > last), key=lambda p: p.first, default=None)
+        if earlier is not None and later is not None and _step_cost(earlier, later, starts) >= JUMP_COST:
+            continue
+        echoes.update(free[j] for p in run for j in range(p.first, p.last + 1))
+    return echoes
+
+
+def _misfit(mapped: Sequence[float | None], natural: Sequence[float], cut: set[int], backing: frozenset[int],
+            activity: Activity | None) -> float:
+    """Share of the lead's voiced time the lyrics and the voice disagree over under this plan.
+
+    Each line kept accounts for the voice in its window, up to what it takes to sing plus a held note (MAX_HOLD);
+    the voiced time no line accounts for is singing the lyrics lack (a bridge, whose time falls to the line before
+    it), and a line kept where the voice has less than CUT_FIT of what it takes is a line the video lacks. Lines
+    cut are a finding, not a misfit. Of two lyrics versions whose chorus whisper hears nothing of, this tells the
+    one the video sings; and it is lowest when the lines are spread over the singing, never when they are packed.
+    """
+    if activity is None or not any(start is not None for start in mapped):
+        return 0.0
+    voiced = sum(b - a for a, b in activity.voiced_intervals(0.0, activity.duration))
+    if voiced <= 0:
+        return 0.0
+    accounted = unsung = 0.0
+    for index, start in enumerate(mapped):
+        if start is None or index in cut:
+            continue
+        following = next((s for s in mapped[index + 1:] if s is not None), start + LAST_LINE_WINDOW)
+        sung = sum(b - a for a, b in activity.voiced_intervals(start, following))
+        if sung < CUT_FIT * natural[index]:
+            if index not in backing:  # (the lead stem doesn't hold the backing's lines)
+                unsung += natural[index]
+        else:
+            accounted += min(sung, natural[index] + MAX_HOLD)
+    return min(1.0, (max(0.0, voiced - accounted) + unsung) / voiced)
 
 
 @dataclass(frozen=True)
@@ -426,26 +631,28 @@ def _line_places(tokens: Sequence[_Token], indices: Sequence[int], heard: Sequen
 
 
 def _place_lines(tokens: Sequence[_Token], by_line: Sequence[list[int]], heard: Sequence[TimedWord],
-                 starts: Sequence[float | None], language: str | None) -> list[_Place]:
+                 starts: Sequence[float | None], language: str | None,
+                 edges: tuple[_Place | None, _Place | None] = (None, None)) -> list[_Place]:
     """The best order-keeping choice of places for the lines (some lines left without one).
 
     Every place a line was heard is a candidate; a path takes lines in order, each on heard words after the
     previous one's. It gains each place's score (heard words, weighted), and between two places pays nothing
     when they keep lrclib's spacing (within DRIFT_TOL, DRIFT_RATE) and JUMP_COST when they don't: a repeated
     block is placed where the timing around it agrees, and a block the video leaves out is jumped over.
+
+    `edges`: lines already placed before and after these (a gap between placed lines, or before the first or after
+    the last): the path pays its jumps from and to them too, less the jump between them already paid, so one word
+    heard off the clock places no line (whisper's "Untouched." where a chorus is sung), and comes back empty when no
+    path gains anything.
     """
-    phonetic = language == "en"
-    heard_norm = [normalize(word.text) for word in heard]
-    weights = [_weight(word) for word in heard]
-    heard_starts = [word.start for word in heard]
-    places = [place for indices in by_line if indices
-              for place in _line_places(tokens, indices, heard, heard_norm, heard_starts, weights, phonetic)]
+    places = _all_places(tuple(tokens), tuple(tuple(indices) for indices in by_line), tuple(heard), language)
     if not places:
         return []
+    before, after = edges
     best: list[float] = []
     back: list[int] = []
     for n, place in enumerate(places):
-        best.append(place.score)
+        best.append(place.score - (_step_cost(before, place, starts) if before is not None else 0.0))
         back.append(-1)
         for m in range(n):
             earlier = places[m]
@@ -454,12 +661,30 @@ def _place_lines(tokens: Sequence[_Token], by_line: Sequence[list[int]], heard: 
             gain = best[m] + place.score - _step_cost(earlier, place, starts)
             if gain > best[n]:
                 best[n], back[n] = gain, m
-    n = max(range(len(places)), key=best.__getitem__)
+    refund = _step_cost(before, after, starts) if before is not None and after is not None else 0.0
+    totals = [best[n] - (_step_cost(places[n], after, starts) if after is not None else 0.0) + refund
+              for n in range(len(places))]
+    n = max(range(len(places)), key=totals.__getitem__)
+    if totals[n] <= 0:
+        return []
     path = []
     while n >= 0:
         path.append(places[n])
         n = back[n]
     return path[::-1]
+
+
+@functools.lru_cache(maxsize=64)
+def _all_places(tokens: tuple[_Token, ...], by_line: tuple[tuple[int, ...], ...], heard: tuple[TimedWord, ...],
+                language: str | None) -> list[_Place]:
+    """Every place every line was heard (`_line_places`), kept for the same question asked again: video_order, the
+    plan and its echo pass place the same lines on the same words, and a long film's places take seconds."""
+    phonetic = language == "en"
+    heard_norm = [normalize(word.text) for word in heard]
+    weights = [_weight(word) for word in heard]
+    heard_starts = [word.start for word in heard]
+    return [place for indices in by_line if indices
+            for place in _line_places(tokens, indices, heard, heard_norm, heard_starts, weights, phonetic)]
 
 
 def video_order(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activity: Activity | None = None, *,
@@ -482,6 +707,8 @@ def video_order(lines: Sequence[LyricLine], heard: Sequence[TimedWord], activity
         return [line for line, _ in kept], []
     tokens = _tokens(kept)
     heard = filter_heard(heard, activity)
+    loops = heard_loops(heard, [line for line, _ in kept])
+    heard = [w for j, w in enumerate(heard) if j not in loops]  # whisper looping says nothing of which line is sung
     by_line = [[k for k in range(len(tokens)) if tokens[k].line == index] for index in range(len(kept))]
     placed = _place_lines(tokens, by_line, heard, starts, language)
     if not placed:
@@ -563,7 +790,8 @@ def _placed_plan(placed: Sequence[_Place], tokens: Sequence[_Token], by_line: Se
     for p in placed:
         mapped[p.line] = p.start
     end_of_song = activity.duration if activity is not None else max(w.end for w in heard) + LAST_LINE_WINDOW
-    gaps = [(range(0, placed[0].line), 0.0, placed[0].start)]
+    gaps: list[tuple[range, float, float, _Place | None, _Place | None]] = [
+        (range(0, placed[0].line), 0.0, placed[0].start, None, placed[0])]
     sections = [placed[0]]
     for earlier, later in zip(placed, placed[1:]):
         between = range(earlier.line + 1, later.line)
@@ -575,12 +803,12 @@ def _placed_plan(placed: Sequence[_Place], tokens: Sequence[_Token], by_line: Se
                     mapped[index] = s + a + (b - a) * fraction
             continue
         sections.append(later)
-        gaps.append((between, heard[earlier.last].end, later.start))
-    gaps.append((range(placed[-1].line + 1, len(starts)), heard[placed[-1].last].end, end_of_song))
-    for lines, low, high in gaps:
+        gaps.append((between, heard[earlier.last].end, later.start, earlier, later))
+    gaps.append((range(placed[-1].line + 1, len(starts)), heard[placed[-1].last].end, end_of_song, placed[-1], None))
+    for lines, low, high, before, after in gaps:
         if lines:
             cut |= _resolve_gap(list(lines), low, high, mapped, tokens, by_line, starts, natural, backing, heard,
-                                activity, language, backing_activity)
+                                activity, language, backing_activity, (before, after))
     base = shift.get(placed[0].line, 0.0)
     corrections = tuple((starts[p.line], shift[p.line] - base) for p in sections[1:]
                         if p.line in shift and starts[p.line] is not None)
@@ -590,16 +818,20 @@ def _placed_plan(placed: Sequence[_Place], tokens: Sequence[_Token], by_line: Se
 def _resolve_gap(lines: list[int], low: float, high: float, mapped: list[float | None], tokens: Sequence[_Token],
                  by_line: Sequence[list[int]], starts: Sequence[float | None], natural: Sequence[float],
                  backing: frozenset[int], heard: Sequence[TimedWord], activity: Activity | None,
-                 language: str | None, backing_activity: Activity | None = None) -> set[int]:
-    """Place the gap's lines heard in it; share its voiced time among the others, or cut them if too little.
+                 language: str | None, backing_activity: Activity | None = None,
+                 edges: tuple[_Place | None, _Place | None] = (None, None)) -> set[int]:
+    """Place the gap's lines heard in it; the others keep lrclib's clock from the nearest placed line where that fits
+    between its neighbours, else share the room between them; cut them if there is too little voiced time for them.
 
     Voiced time where words were heard that none of the gap's lines has (a verse the lyrics leave out) is
-    no room for them.
+    no room for them. `edges`: the placed lines before and after the gap (None at the song's ends).
     """
     inside = [w for w in heard if low <= w.start < high]
     gap_lines = [by_line[index] if index in lines else [] for index in range(len(by_line))]
-    placed = _place_lines(tokens, gap_lines, inside, starts, language)
+    placed = _place_lines(tokens, gap_lines, inside, starts, language, edges)
     anchors = {p.line: p.start for p in placed}
+    shifts = {p.line: p.start - starts[p.line] for p in [*placed, *edges]  # type: ignore[operator]
+              if p is not None and starts[p.line] is not None}
     used = {j for p in placed for _, j in p.matches}
     others = [w for j, w in enumerate(inside) if j not in used and w.source != BACKING]
 
@@ -633,6 +865,9 @@ def _resolve_gap(lines: list[int], low: float, high: float, mapped: list[float |
                 cut.update(run)
                 for i in run:
                     mapped[i] = before
+            elif (clock := _on_clock(run, shifts, starts, natural, before, after)) is not None:
+                for i, t in zip(run, clock):
+                    mapped[i] = t
             else:
                 cursor = before
                 for i in run:
@@ -642,6 +877,21 @@ def _resolve_gap(lines: list[int], low: float, high: float, mapped: list[float |
         if index is not None:
             mapped[index] = anchors[index]
     return cut
+
+
+def _on_clock(run: Sequence[int], shifts: dict[int, float], starts: Sequence[float | None], natural: Sequence[float],
+              before: float, after: float) -> list[float] | None:
+    """The run's lines on lrclib's clock, shifted as the nearest placed line before them (else after) is, when they
+    fit between `before` and `after` (CLOCK_SLACK over either edge allowed, clamped); None when they don't."""
+    nearest = max((line for line in shifts if line < run[0]), default=None)
+    if nearest is None:
+        nearest = min((line for line in shifts if line > run[-1]), default=None)
+    if nearest is None or any(starts[i] is None for i in run):
+        return None
+    clock = [starts[i] + shifts[nearest] for i in run]  # type: ignore[operator]
+    if clock[0] < before - CLOCK_SLACK or clock[-1] + natural[run[-1]] > after + CLOCK_SLACK:
+        return None
+    return [min(max(t, before), after) for t in clock]
 
 
 def forced_requests(lines: Sequence[LyricLine], plan: AlignmentPlan, *, use_word_tags: bool = True,
@@ -1035,6 +1285,25 @@ def _match_pairs(tokens: Sequence[_Token], heard: Sequence[TimedWord], windows: 
     return matches[::-1]
 
 
+def _drop_strays(tokens: Sequence[_Token], by_line: Sequence[list[int]], heard: Sequence[TimedWord],
+                 windows: Sequence[Window | None], matches: Sequence[_Match]) -> list[_Match]:
+    """The matches less a line's stray ones: heard words outside the line's own window (in the slack around it) count
+    only when the line is mostly heard (PLACE_MIN of its words) -- lrclib's clock a few seconds off for the whole
+    line -- not for a word or two of it that whisper wrote where another line is sung (a chorus it loops on, the
+    fragments of its prompt), which would drag the line off the clock and cut its neighbours for want of room."""
+    by_match_line: dict[int, list[_Match]] = {}
+    for m in matches:
+        by_match_line.setdefault(tokens[m.i].line, []).append(m)
+    kept: list[_Match] = []
+    for line, own in by_match_line.items():
+        window = windows[line] if line < len(windows) else None
+        if window is None or sum(m.ni for m in own) >= PLACE_MIN * len(by_line[line]):
+            kept.extend(own)
+            continue
+        kept.extend(m for m in own if window[0] <= heard[m.j].start <= window[1])
+    return sorted(kept, key=lambda m: m.i)
+
+
 def _matched_times(tokens: Sequence[_Token], heard: Sequence[TimedWord], matches: Sequence[_Match]
                    ) -> list[Times | None]:
     times: list[Times | None] = [None] * len(tokens)
@@ -1120,16 +1389,27 @@ def align_lyrics(lines: Sequence[LyricLine], heard: Sequence[TimedWord], *, plan
         plan = plan_alignment(lines, heard, activity, language=language, window=window,
                               backing_activity=backing_activity)
     heard = filter_heard(heard, activity)
+    if (ignored := plan.ignored) is None:  # a plan from before loops and echoes were looked for
+        starts = [line.start for line, _ in kept]
+        by_line = [[k for k in range(len(tokens)) if tokens[k].line == index] for index in range(len(kept))]
+        ignored = _hallucinated(kept, tokens, by_line, heard, starts, language)[0] if any(s is not None for s in starts) else frozenset()
+    heard = [w for j, w in enumerate(heard) if j not in ignored]
     windows = _line_windows(plan.starts)
-    times = _matched_times(tokens, heard, _match_pairs(tokens, heard, windows, window, language, skip=plan.cut))
+    by_line = [[k for k in range(len(tokens)) if tokens[k].line == index] for index in range(len(kept))]
+    times = _matched_times(tokens, heard, _drop_strays(tokens, by_line, heard, windows,
+                                                      _match_pairs(tokens, heard, windows, window, language, skip=plan.cut)))
     if mix_heard is not None:
         mix = filter_heard(mix_heard, activity)
-        times = _vote(times, _matched_times(tokens, mix, _match_pairs(tokens, mix, windows, window, language,
-                                                                      skip=plan.cut)))
+        times = _vote(times, _matched_times(tokens, mix, _drop_strays(tokens, by_line, mix, windows,
+                                                                      _match_pairs(tokens, mix, windows, window, language,
+                                                                                   skip=plan.cut))))
     apart = _backing_apart(tokens)
     _drop_non_monotonic(times, apart)
     _cohere(tokens, times)
     matched = sum(t is not None for t in times)
+    heard_share = None
+    if activity is not None and (voiced := float(activity.voiced.sum()) * activity.hop) > 0:
+        heard_share = min(1.0, sum(tokens[k].natural for k in range(len(tokens)) if times[k] is not None) / voiced)
     sources = ["whisper" if t is not None else "" for t in times]
     forced_scores = _apply_better_sources(kept, tokens, times, sources, plan, forced, use_word_tags)
     _drop_non_monotonic(times, apart)
@@ -1153,20 +1433,26 @@ def align_lyrics(lines: Sequence[LyricLine], heard: Sequence[TimedWord], *, plan
     ]
     shown = [score for k, score in forced_scores.items() if all_tokens[k].line not in plan.cut]
     return Alignment(timed_lines, matched, len(all_tokens), forced=sum(source == "forced" for source in sources),
-                     forced_score=statistics.fmean(shown) if shown else None, cut=len(plan.cut))
+                     forced_score=statistics.fmean(shown) if shown else None, cut=len(plan.cut), misfit=plan.misfit,
+                     heard_share=heard_share)
 
 
-def fill_unlyricked(lines: Sequence[TimedLine], heard: Sequence[TimedWord], activity: Activity | None = None
-                    ) -> list[TimedLine]:
+def fill_unlyricked(lines: Sequence[TimedLine], heard: Sequence[TimedWord], activity: Activity | None = None,
+                    lyrics: Sequence[LyricLine] | None = None) -> list[TimedLine]:
     """Add what's sung where the lyrics have nothing: a rap or a verse the lyric site left out.
 
     In each gap between the timed lines (and before the first, after the last) at least FILL_MIN long, the
     words heard there (not in silence, scored at least FILL_SCORE) become lines of their own, labelled
     `heard`, if there are at least FILL_WORDS of them and (with activity) the lead sings through at least
-    FILL_VOICED of the gap. The timed lines themselves are kept as they are.
+    FILL_VOICED of the gap. The timed lines themselves are kept as they are. With `lyrics` (the lines the timed
+    ones came from), whisper looping on a chorus (`heard_loops`) is no line: it is sung, but not as heard.
     """
     lines = sorted(lines, key=lambda line: line.start)
-    words = [w for w in filter_heard(heard, activity) if w.score is None or w.score >= FILL_SCORE]
+    heard = filter_heard(heard, activity)
+    if lyrics is not None:
+        loops = heard_loops(heard, lyrics)
+        heard = [w for j, w in enumerate(heard) if j not in loops]
+    words = [w for w in heard if w.score is None or w.score >= FILL_SCORE]
     bounds = [-math.inf] + [edge for line in lines for edge in (line.start, line.end)] + [math.inf]
     added: list[TimedLine] = []
     for k in range(0, len(bounds), 2):
