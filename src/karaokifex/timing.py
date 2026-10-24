@@ -91,9 +91,10 @@ PLACE_MIN = 0.5
 DRIFT_TOL, DRIFT_RATE = 1.0, 0.06
 # ...and a jump between them (a cut in the video, or lrclib's clock off) costs this many heard words...
 JUMP_COST = 3.0
-# ...but where two lines one after the other in the lyrics are heard one after the other in the video, no further apart than
-# a place's own pause (PLACE_PAUSE), the jump is lrclib's clock wrong for one of them (a first line timed at 0:00 and sung
-# half a minute later, right before the second), and costs this much
+# ...but where the lyrics' first line is heard right before the second, no further apart than a place's own pause (PLACE_PAUSE),
+# the jump is lrclib's clock wrong for it (a first line timed at 0:00 and sung half a minute later, right before the second), and
+# costs this much. Only the first: between two lines further in a back-to-back pair is no evidence against the clock (whisper
+# writing a line again over the next one's start would take it there)
 BACK_TO_BACK_COST = 0.5
 # merge_heard: a phrase of the unprompted pass ends at a pause this long (s); the prompted pass's words over
 # it (at least DISAGREE_MIN of them) are dropped when less than AGREE_SHARE of them are in the phrase
@@ -809,11 +810,11 @@ def _step_cost(earlier: _Place, later: _Place, starts: Sequence[float | None]) -
 
 
 def _path_cost(earlier: _Place, later: _Place, starts: Sequence[float | None]) -> float:
-    """What a placement path pays between two places: their step's cost (_step_cost), but a jump between two lines next to
-    each other in the lyrics sung back to back in the video only BACK_TO_BACK_COST. Still a jump for the time map: the
-    section it opens keeps its own shift (_placed_plan)."""
+    """What a placement path pays between two places: their step's cost (_step_cost), but a jump from the lyrics' first line
+    to the second sung back to back in the video only BACK_TO_BACK_COST. Still a jump for the time map: the section it opens
+    keeps its own shift (_placed_plan)."""
     cost = _step_cost(earlier, later, starts)
-    if cost >= JUMP_COST and later.line == earlier.line + 1 and 0.0 <= later.start - earlier.end <= PLACE_PAUSE:
+    if cost >= JUMP_COST and earlier.line == 0 and later.line == 1 and 0.0 <= later.start - earlier.end <= PLACE_PAUSE:
         return BACK_TO_BACK_COST
     return cost
 
