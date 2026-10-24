@@ -219,6 +219,19 @@ def test_a_video_that_leaves_out_one_of_two_identical_blocks_is_followed_through
     assert result.cut == 5
 
 
+def test_a_first_line_lrclib_times_far_too_early_is_kept_where_it_is_sung_right_before_the_second():
+    # lrclib has the first line at 0:01 and the rest from 0:20; the video sings it right before the second, at 0:28
+    texts = ["silver words fall", *BLOCK, "shout it out loud"]
+    lines = [LyricLine(1.0, texts[0]), *[LyricLine(20.0 + 3.0 * i, text) for i, text in enumerate(texts[1:])]]
+    video = [(texts[0], 28.0), *[(text, 30.0 + 3.0 * i) for i, text in enumerate(texts[1:])]]
+    words, activity = sung_lines(*video)
+    plan = plan_alignment(lines, words, activity)
+    assert not plan.cut
+    result = align_lyrics(lines, words, activity=activity)
+    assert [line.text for line in result.lines] == texts
+    assert result.lines[0].start == pytest.approx(28.0, abs=0.05)
+
+
 def test_blocks_the_video_sings_in_another_order_come_back_in_its_order():
     # lrclib (the album): three blocks A B C, 4 s a line; the video sings A, then C, then B, each line 4 s apart too
     A = ["red kite flies high", "blue boat sails far", "green tree grows tall"]

@@ -89,8 +89,12 @@ BACKING_APART = 0.1  # s: a lead word this far inside the backing's words means 
 PLACE_MIN = 0.5
 # ...two placed lines keep lrclib's spacing within this many seconds (plus this share of their distance)...
 DRIFT_TOL, DRIFT_RATE = 1.0, 0.06
-# ...and a jump between them (a cut in the video, or lrclib's clock off) costs this many heard words
+# ...and a jump between them (a cut in the video, or lrclib's clock off) costs this many heard words...
 JUMP_COST = 3.0
+# ...but where two lines one after the other in the lyrics are heard one after the other in the video, no further apart than
+# a place's own pause (PLACE_PAUSE), the jump is lrclib's clock wrong for one of them (a first line timed at 0:00 and sung
+# half a minute later, right before the second), and costs this much
+BACK_TO_BACK_COST = 0.5
 # merge_heard: a phrase of the unprompted pass ends at a pause this long (s); the prompted pass's words over
 # it (at least DISAGREE_MIN of them) are dropped when less than AGREE_SHARE of them are in the phrase
 PHRASE_PAUSE, DISAGREE_MIN, AGREE_SHARE = 0.6, 3, 0.5
@@ -606,6 +610,7 @@ class _Place:
     score: float
     start: float  # where the line starts in the video, by its first heard word
     matches: tuple[tuple[int, int], ...]
+    end: float = 0.0  # where its last heard word ends
 
 
 def _line_places(tokens: Sequence[_Token], indices: Sequence[int], heard: Sequence[TimedWord],
@@ -656,7 +661,7 @@ def _line_places(tokens: Sequence[_Token], indices: Sequence[int], heard: Sequen
         before = sum(t.natural for t in line_tokens[:matches[0].i])  # unheard words ahead of the first heard one
         pairs = tuple((indices[m.i + d], j + m.j) for m in matches for d in range(m.ni))
         places.append(_Place(line_tokens[0].line, j, j + matches[-1].j + matches[-1].nj - 1, score,
-                             heard[j].start - before, pairs))
+                             heard[j].start - before, pairs, heard[last_j - 1].end))
     return places
 
 
@@ -682,17 +687,17 @@ def _place_lines(tokens: Sequence[_Token], by_line: Sequence[list[int]], heard: 
     best: list[float] = []
     back: list[int] = []
     for n, place in enumerate(places):
-        best.append(place.score - (_step_cost(before, place, starts) if before is not None else 0.0))
+        best.append(place.score - (_path_cost(before, place, starts) if before is not None else 0.0))
         back.append(-1)
         for m in range(n):
             earlier = places[m]
             if earlier.line >= place.line or earlier.last >= place.first:
                 continue
-            gain = best[m] + place.score - _step_cost(earlier, place, starts)
+            gain = best[m] + place.score - _path_cost(earlier, place, starts)
             if gain > best[n]:
                 best[n], back[n] = gain, m
-    refund = _step_cost(before, after, starts) if before is not None and after is not None else 0.0
-    totals = [best[n] - (_step_cost(places[n], after, starts) if after is not None else 0.0) + refund
+    refund = _path_cost(before, after, starts) if before is not None and after is not None else 0.0
+    totals = [best[n] - (_path_cost(places[n], after, starts) if after is not None else 0.0) + refund
               for n in range(len(places))]
     n = max(range(len(places)), key=totals.__getitem__)
     if totals[n] <= 0:
@@ -801,6 +806,16 @@ def _step_cost(earlier: _Place, later: _Place, starts: Sequence[float | None]) -
     if drift <= tolerance:
         return 0.5 * drift / tolerance
     return JUMP_COST + 0.01 * drift  # of two jumps, the smaller
+
+
+def _path_cost(earlier: _Place, later: _Place, starts: Sequence[float | None]) -> float:
+    """What a placement path pays between two places: their step's cost (_step_cost), but a jump between two lines next to
+    each other in the lyrics sung back to back in the video only BACK_TO_BACK_COST. Still a jump for the time map: the
+    section it opens keeps its own shift (_placed_plan)."""
+    cost = _step_cost(earlier, later, starts)
+    if cost >= JUMP_COST and later.line == earlier.line + 1 and 0.0 <= later.start - earlier.end <= PLACE_PAUSE:
+        return BACK_TO_BACK_COST
+    return cost
 
 
 def _placed_plan(placed: Sequence[_Place], tokens: Sequence[_Token], by_line: Sequence[list[int]],
