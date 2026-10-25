@@ -232,6 +232,24 @@ def test_a_first_line_lrclib_times_far_too_early_is_kept_where_it_is_sung_right_
     assert result.lines[0].start == pytest.approx(28.0, abs=0.05)
 
 
+def test_a_one_word_first_line_is_kept_when_the_backing_sings_the_second_line_s_opening_early():
+    # lrclib: a one-word first line, then the verse; the video sings the word right before the verse, and whisper on the
+    # backing stem writes the verse's second word a second early, under that word. The verse's place starts on the lead's
+    # own words, so the first line keeps its place before it
+    texts = ["sunrise", "we hold hands and walk away", "we look at the sky above us"]
+    lines = [LyricLine(9.0, texts[0]), LyricLine(12.0, texts[1]), LyricLine(16.5, texts[2])]
+    video = [(texts[0], 5.0), (texts[1], 6.8), (texts[2], 11.0)]
+    words, activity = sung_lines(*video)
+    backing = [TimedWord("hold", 5.5, 7.3, 0.7, source="backing")]
+    heard_all = sorted([*words, *backing], key=lambda w: w.start)
+    plan = plan_alignment(lines, heard_all, activity, language="it")
+    assert not plan.cut
+    result = align_lyrics(lines, heard_all, activity=activity, language="it")
+    assert [line.text for line in result.lines] == texts
+    assert result.lines[0].start == pytest.approx(5.0, abs=0.3)
+    assert result.lines[1].start == pytest.approx(6.8, abs=0.3)
+
+
 def test_blocks_the_video_sings_in_another_order_come_back_in_its_order():
     # lrclib (the album): three blocks A B C, 4 s a line; the video sings A, then C, then B, each line 4 s apart too
     A = ["red kite flies high", "blue boat sails far", "green tree grows tall"]

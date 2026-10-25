@@ -630,6 +630,14 @@ def _line_places(tokens: Sequence[_Token], indices: Sequence[int], heard: Sequen
                 second and _similarity(second, heard_norm[j], phonetic)
                 and (j == 0 or not _similarity(first, heard_norm[j - 1], phonetic))):
             continue
+        # A lead line's place never opens on the backing singers' word when the lead sings the line's opening right
+        # after it (within PLACE_PAUSE): the lead's own words are the place, and start it. Whisper on the backing stem
+        # writes the lead's opening a second early, and a place begun there reached back over the line sung before
+        if heard[j].source == BACKING and not line_tokens[0].backing and any(
+                heard[k].source != BACKING and heard[k].start - heard[j].start <= PLACE_PAUSE
+                and (_similarity(first, heard_norm[k], phonetic) or (second and _similarity(second, heard_norm[k], phonetic)))
+                for k in range(j + 1, min(j + 6, len(heard)))):
+            continue
         # the heard words within the line's likely span (two transcriptions' words may interleave)
         span = heard[j].start + 1.5 * sum(t.natural for t in line_tokens) + 1.5
         stretch = heard[j: min(j + 3 * count + 4, bisect.bisect_right(heard_starts, span))]
