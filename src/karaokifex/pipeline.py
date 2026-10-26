@@ -62,7 +62,7 @@ from karaokifex.timing import (
     plan_alignment,
     video_order,
 )
-from karaokifex.workspace import Workspace, partial_path, sanitize_name
+from karaokifex.workspace import Workspace, find_folder, partial_path, sanitize_name
 
 log = logging.getLogger(__name__)
 
@@ -143,7 +143,8 @@ def prepare(config: Config) -> Job:
 def retimed_song(config: Config) -> VideoInfo:
     """The details (info.json) of the song --retime times again, from its folder (-a and -s), which must hold its lead
     vocals (stems/lead.wav); with --backing-vocals, the backing vocals too (stems/backing_vocals.wav) or they are left out."""
-    root = config.output_dir / sanitize_name(f"{config.artist} - {config.song}")
+    # (the folder as it is spelled on disk, "…" or "...": find_folder)
+    root = find_folder(config.output_dir, f"{config.artist} - {config.song}")
     workspace = Workspace(root, f"{config.artist} - {config.song}")
     try:
         info = VideoInfo.from_dict(json.loads(workspace.info_json.read_text(encoding="utf-8")))
@@ -160,7 +161,7 @@ def kept_download(config: Config) -> VideoInfo | None:
     the video's site again. None for anything else."""
     if not (config.artist and config.song):
         return None
-    root = config.output_dir / sanitize_name(f"{config.artist} - {config.song}")
+    root = find_folder(config.output_dir, f"{config.artist} - {config.song}")
     try:
         data = json.loads((root / "info.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from karaokifex.workspace import Workspace, partial_path, sanitize_name
+from karaokifex.workspace import Workspace, find_folder, partial_path, same_name, sanitize_name
 
 
 @pytest.mark.parametrize(
@@ -89,3 +89,25 @@ def test_cleanup_removes_empty_folders(tmp_path):
     ws.cleanup()
     assert not ws.stems_dir.exists()
     assert ws.root.exists()
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [("Artist - …And Then Some", "Artist - ...And Then Some"), ("Artist - Don\u2019t Stop", "Artist - Don't Stop"),
+     ("ARTIST -  Song", "artist - song"), ("Beyonc\u00e9 - Halo", "Beyonce\u0301 - Halo")],
+)
+def test_same_name_folds_spelling(a, b):
+    assert same_name(a) == same_name(b)
+
+
+def test_find_folder_takes_the_folder_as_spelled_on_disk(tmp_path):
+    made = tmp_path / "Artist - …And Then Some"
+    made.mkdir()
+    assert find_folder(tmp_path, "Artist - ...And Then Some") == made
+    assert find_folder(tmp_path, "Artist - …And Then Some") == made
+    # nothing like it: the expected path, for a first make
+    assert find_folder(tmp_path, "Artist - Other") == tmp_path / "Artist - Other"
+    # an exact folder wins over a look-alike
+    exact = tmp_path / "Artist - ...And Then Some"
+    exact.mkdir()
+    assert find_folder(tmp_path, "Artist - ...And Then Some") == exact

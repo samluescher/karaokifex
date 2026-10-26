@@ -4,12 +4,38 @@ from __future__ import annotations
 
 import glob
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 _ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def same_name(name: str) -> str:
+    """A folder name folded for comparison: a typographic ellipsis or quote and its plain spelling are one, as are
+    case, accents' composition and runs of spaces ("…And Then Some" is "...And Then Some")."""
+    folded = unicodedata.normalize("NFKC", name).replace("…", "...").replace("\u2019", "'").replace("\u2018", "'")
+    folded = folded.replace("\u201c", '"').replace("\u201d", '"').replace("\u2013", "-").replace("\u2014", "-")
+    return re.sub(r"\s+", " ", folded).strip().casefold()
+
+
+def find_folder(output_dir: Path, name: str) -> Path:
+    """The song's folder under `output_dir`: the one named after `name` (sanitize_name), or, where that is not there,
+    a folder whose name is the same but for spelling (same_name: "…" against "...", case, quotes), so a song made
+    again finds the folder it was made in, however the request spells it. The expected path when neither exists."""
+    want = output_dir / sanitize_name(name)
+    if want.exists():
+        return want
+    key = same_name(want.name)
+    try:
+        for p in sorted(output_dir.iterdir()):
+            if p.is_dir() and same_name(p.name) == key:
+                return p
+    except OSError:
+        pass
+    return want
 
 
 def sanitize_name(name: str, max_length: int = 100) -> str:
