@@ -75,6 +75,12 @@ log = logging.getLogger("karaokifex")
 @click.option("--upscale/--no-upscale", default=None,
               help="Scale sources below --resolution up to it. Default: only when the lyrics are burned in; "
                    "with --no-burn-lyrics the picture keeps its own size.")
+@click.option("--max-height", type=click.IntRange(min=144), default=None,
+              help="Maximum output height in pixels: a taller source is scaled down to it (a 4K video rendered at 1080 "
+                   "lines). Default: a source keeps its size.")
+@click.option("--max-bitrate", type=click.IntRange(min=100_000), default=None,
+              help="Maximum video bitrate of the renders, in bits a second (6000000 for 6 Mbit/s): a heavier source is "
+                   "encoded to it rather than copied. Default: the source's own bitrate.")
 @click.option("--lead-volume", type=click.FloatRange(0, 1), default=0.0, show_default=True,
               help="Mix the isolated lead vocal back into the karaoke audio (0 = no voice, 1 = full volume).")
 @click.option("--browser-friendly", is_flag=True,

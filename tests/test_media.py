@@ -78,6 +78,14 @@ def test_target_bitrate_scales_with_format_efficiency():
     assert media.target_bitrate(SourceInfo("av1", None), "hevc") is None
 
 
+def test_target_bitrate_stays_under_the_ceiling():
+    source = SourceInfo("vp9", 16_000_000, "opus")
+    assert media.target_bitrate(source, "h264", 6_000_000) == 6_000_000
+    assert media.target_bitrate(SourceInfo("h264", 4_000_000), "h264", 6_000_000) == 4_000_000
+    # a source whose bitrate isn't known is encoded to the ceiling
+    assert media.target_bitrate(SourceInfo("av1", None), "hevc", 6_000_000) == 6_000_000
+
+
 @pytest.mark.parametrize(
     ("source_height", "target_height", "expected"),
     [(720, 1080, "scale=-2:1080"), (1080, 1080, None), (2160, 1080, None), (None, 1080, None), (720, None, None)],
@@ -86,11 +94,26 @@ def test_scale_filter_only_upsamples_smaller_sources(source_height, target_heigh
     assert media.scale_filter(source_height, target_height) == expected
 
 
+@pytest.mark.parametrize(
+    ("source_height", "max_height", "expected"),
+    [(2160, 1080, "scale=-2:1080"), (1440, 1080, "scale=-2:1080"), (1080, 1080, None), (720, 1080, None), (2160, None, None)],
+)
+def test_scale_filter_downscales_to_the_maximum(source_height, max_height, expected):
+    assert media.scale_filter(source_height, None, max_height) == expected
+
+
 def test_encoder_options():
     gpu = Encoder("hevc", gpu=True).options(13_000_000)
     assert gpu["b:v"] == 13_000_000 and gpu["maxrate"] == 26_000_000 and gpu["preset"] == "p4"
     assert Encoder("hevc", gpu=True).options(None)["cq"] == 23
     assert Encoder("h264", gpu=False).options(None) == {"preset": "medium", "crf": 20}
+
+
+def test_encoder_options_with_a_ceiling():
+    gpu = Encoder("h264", gpu=True).options(5_000_000, 6_000_000)
+    assert gpu["b:v"] == 5_000_000 and gpu["maxrate"] == 6_000_000 and gpu["bufsize"] == 12_000_000
+    cpu = Encoder("h264", gpu=False).options(5_000_000, 6_000_000)
+    assert cpu["b:v"] == 5_000_000 and cpu["maxrate"] == 6_000_000 and cpu["bufsize"] == 12_000_000
 
 
 def test_audio_follows_the_source_codec():
@@ -164,6 +187,25 @@ def test_browser_friendly_copies_h264_and_encodes_aac(monkeypatch, tmp_path):
     assert args[args.index("-vcodec") + 1] == "copy"
     assert args[args.index("-acodec") + 1] == "aac"
     assert args[args.index("-movflags") + 1] == "+faststart"
+
+
+def test_a_source_over_the_ceiling_is_scaled_down_and_capped(monkeypatch, tmp_path):
+    source = SourceInfo("vp9", 16_000_000, "opus", 3840, 2160, "yuv420p", "Profile 0")
+    description, args = fake_render(monkeypatch, tmp_path, None, source, browser=True, max_height=1080, max_bitrate=6_000_000)
+    assert description.startswith("h264_nvenc (GPU) at 6.0 Mbit/s + aac")
+    graph = args[args.index("-filter_complex") + 1]
+    assert "scale=-2:1080" in graph
+    assert args[args.index("-maxrate") + 1] == "6000000" and args[args.index("-b:v") + 1] == "6000000"
+
+
+def test_a_heavy_h264_source_is_encoded_not_copied(monkeypatch, tmp_path):
+    heavy = SourceInfo("h264", 9_000_000, "opus", 1920, 1080, "yuv420p", "High")
+    description, args = fake_render(monkeypatch, tmp_path, None, heavy, browser=True, max_height=1080, max_bitrate=6_000_000)
+    assert description.startswith("h264_nvenc (GPU) at 6.0 Mbit/s")
+    assert "-filter_complex" not in args or "scale" not in args[args.index("-filter_complex") + 1]
+    # a light one within the ceiling is still copied as it is
+    description, args = fake_render(monkeypatch, tmp_path, None, H264, browser=True, max_height=1080, max_bitrate=6_000_000)
+    assert description == "h264 copied + aac"
 
 
 def test_browser_friendly_encodes_other_formats_to_h264(monkeypatch, tmp_path):

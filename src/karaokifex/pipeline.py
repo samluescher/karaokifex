@@ -781,6 +781,7 @@ def _original(job: Job, ctx: TaskContext) -> str:
     encoding = media.render(ws.video, ws.source, None, job.original_video, tool=job.ffmpeg, source=_source_info(job),
                             target_height=job.config.target_height, browser=job.config.browser_friendly,
                             copy_audio=not gain, gain_db=gain or None, duration=job.info.duration,
+                            max_height=job.config.max_height, max_bitrate=job.config.max_bitrate,
                             on_progress=ctx.progress)
     size = job.original_video.stat().st_size / 1_048_576
     log.info("wrote %s (%.0f MiB) with %s", job.original_video.name, size, encoding)
@@ -807,6 +808,7 @@ def _render(job: Job, ctx: TaskContext) -> str:
                             source=source, lead=ws.lead, lead_volume=job.config.lead_volume,
                             darken=job.config.darken, target_height=job.config.target_height,
                             browser=job.config.browser_friendly, duration=job.info.duration, gain_db=gain,
+                            max_height=job.config.max_height, max_bitrate=job.config.max_bitrate,
                             on_progress=ctx.progress)
     size = job.output_video.stat().st_size / 1_048_576
     log.info("rendered %s (%.0f MiB) with %s", job.output_video.name, size, encoding)

@@ -35,6 +35,10 @@ class Config:
     darken: float = 0.08
     resolution: int = DEFAULT_RESOLUTION
     upscale: bool | None = None  # scale a source below `resolution` up to it; None: only with burned-in lyrics
+    # the renders' ceiling: a source taller than max_height is scaled down to it, and they never take more than max_bitrate
+    # bits a second (the picture is encoded then, never copied). None: each keeps its source's size and bitrate
+    max_height: int | None = None
+    max_bitrate: int | None = None
     lead_volume: float = 0.0
     browser_friendly: bool = False  # MP4 with H.264 + AAC; the video is copied when it already is H.264
     output_dir: Path = Path(".")

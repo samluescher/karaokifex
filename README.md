@@ -171,7 +171,10 @@ between 0 and 1 to mix it back into the karaoke audio.
 `--no-burn-lyrics` leaves the picture as it is: no lyrics, no darkening, and no upscaling -- the player
 scales the picture anyway. The video stream is then copied without re-encoding. `--upscale` scales a
 smaller source up to `--resolution` even so, and `--no-upscale` keeps every source's size with burned-in
-lyrics too. The result is
+lyrics too. `--max-height` and `--max-bitrate` put a ceiling on the renders either way: a taller source is
+scaled down to that height and a heavier one encoded to at most that many bits a second (`--max-height 1080
+--max-bitrate 6000000` serves a 4K download as 1080p at 6 Mbit/s, for a player on an ordinary line, while
+`--keep-download` keeps the download itself at full quality). The result is
 `<Artist - Song> (Karaoke, no lyrics).mkv`, and the lyrics are still written to `lyrics.ass` and
 `timings.json` (every word with its start and end), for a player that shows them itself.
 

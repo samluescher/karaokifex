@@ -49,6 +49,13 @@ def test_resolution_option_becomes_config(fake_run):
     assert fake_run["config"].resolution == 720
 
 
+def test_ceiling_options_become_config(fake_run):
+    result = CliRunner().invoke(cli.main, [URL, "--max-height", "1080", "--max-bitrate", "6000000"])
+    assert result.exit_code == 0, result.output
+    assert fake_run["config"].max_height == 1080 and fake_run["config"].max_bitrate == 6_000_000
+    assert fake_run["config"].target_height == 1080  # the minimum, as before
+
+
 def test_lead_volume_option_becomes_config(fake_run):
     result = CliRunner().invoke(cli.main, [URL, "--lead-volume", "0.35"])
     assert result.exit_code == 0, result.output

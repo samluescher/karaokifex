@@ -52,11 +52,12 @@ class Encoder:
     def label(self) -> str:
         return f"{self.codec} ({'GPU' if self.gpu else 'CPU'})"
 
-    def options(self, bitrate: int | None) -> dict[str, Any]:
-        """Encoder options: an average bitrate when known, constant quality otherwise."""
+    def options(self, bitrate: int | None, ceiling: int | None = None) -> dict[str, Any]:
+        """Encoder options: an average bitrate when known, constant quality otherwise; with a `ceiling` (--max-bitrate)
+        the rate never climbs past it for long (maxrate, with a buffer of two seconds of it)."""
         if self.gpu:
             if bitrate:
-                rate: dict[str, Any] = {"b:v": bitrate, "maxrate": 2 * bitrate, "bufsize": 4 * bitrate}
+                rate: dict[str, Any] = {"b:v": bitrate, "maxrate": ceiling or 2 * bitrate, "bufsize": 2 * (ceiling or 2 * bitrate)}
             else:
                 rate = {"cq": 23, "b:v": 0}
             # p4 is NVENC's balanced preset. The modern p1-p7 presets need ffmpeg >= 4.3;
@@ -64,6 +65,8 @@ class Encoder:
             return {"preset": "p4", "tune": "hq", "rc": "vbr", **rate}
         preset = {"av1": 8, "hevc": "fast", "h264": "medium"}[self.format]
         rate = {"b:v": bitrate} if bitrate else {"crf": {"av1": 32, "hevc": 22, "h264": 20}[self.format]}
+        if ceiling and bitrate:
+            rate.update({"maxrate": ceiling, "bufsize": 2 * ceiling})
         return {"preset": preset, **rate}
 
 
@@ -148,16 +151,24 @@ def choose_encoder(source_format: str | None, tool: FfmpegBinary, *, gpu: bool =
     raise FfmpegError(f"{tool.path} has no usable video encoder")
 
 
-def target_bitrate(source: SourceInfo, fmt: str) -> int | None:
-    """The source's bitrate, scaled for how efficient the output format is compared to the source's."""
+def target_bitrate(source: SourceInfo, fmt: str, ceiling: int | None = None) -> int | None:
+    """The source's bitrate, scaled for how efficient the output format is compared to the source's, and never over
+    `ceiling` (--max-bitrate) where one is given."""
     if not source.video_bitrate or source.video_format not in BITRATE_FACTOR:
-        return source.video_bitrate
-    return round(source.video_bitrate * BITRATE_FACTOR[fmt] / BITRATE_FACTOR[source.video_format])
+        rate = source.video_bitrate
+    else:
+        rate = round(source.video_bitrate * BITRATE_FACTOR[fmt] / BITRATE_FACTOR[source.video_format])
+    return min(rate, ceiling) if rate and ceiling else rate or ceiling
 
 
-def scale_filter(source_height: int | None, target_height: int | None) -> str | None:
-    """Return a proportional upscale filter when the source is below the target height (None: never)."""
-    return f"scale=-2:{target_height}" if source_height and target_height and source_height < target_height else None
+def scale_filter(source_height: int | None, target_height: int | None, max_height: int | None = None) -> str | None:
+    """Return a proportional scale filter: up to the target height when the source is below it (None: never), down to
+    `max_height` when the source is above it (--max-height; None: never). Otherwise None."""
+    if source_height and target_height and source_height < target_height:
+        return f"scale=-2:{target_height}"
+    if source_height and max_height and source_height > max_height:
+        return f"scale=-2:{max_height}"
+    return None
 
 
 def audio_encoder(source_format: str | None, tool: FfmpegBinary, *, browser: bool = False) -> tuple[str, str]:
@@ -283,12 +294,15 @@ def render(video: Path, audio: Path, subtitles: Path | None, target: Path, *, to
            source: SourceInfo, lead: Path | None = None, lead_volume: float = 0.0, darken: float = 0.08,
            target_height: int | None = 1080, browser: bool = False, copy_audio: bool = False,
            duration: float | None = None, gain_db: float | None = None,
+           max_height: int | None = None, max_bitrate: int | None = None,
            on_progress: ProgressCallback | None = None) -> str:
     """Darken the video, burn in the subtitles and pair it with the karaoke audio.
 
     Encodes to the source's video format at a comparable bitrate when the hardware allows, and
     falls back to the CPU if the GPU encoder fails. Without subtitles the picture is left as it
-    is: the video stream is copied, unless it must be upscaled. `browser` makes an MP4 every
+    is: the video stream is copied, unless it must be upscaled, or scaled down to `max_height`, or
+    is heavier than `max_bitrate` (the renders' ceiling, --max-height and --max-bitrate: encoded to
+    at most that, never copied). `browser` makes an MP4 every
     browser plays: H.264 High (copied when the source already is such H.264), AAC, fast start.
     `copy_audio` passes `audio` (the source's own track) through when the output takes its codec.
     `gain_db` changes the audio's level, with a limiter keeping its peaks under -1 dBFS.
@@ -300,10 +314,11 @@ def render(video: Path, audio: Path, subtitles: Path | None, target: Path, *, to
         audio_codec, audio_bitrate = audio_encoder(source.audio_format, tool, browser=browser)
     sound = f"{source.audio_format or 'audio'} copied" if audio_codec == "copy" else audio_codec
     options: dict[str, Any] = dict(lead=lead, lead_volume=lead_volume, gain_db=gain_db, darken=darken,
-                                   target_height=target_height,
+                                   target_height=target_height, max_height=max_height, max_bitrate=max_bitrate,
                                    source_height=source.video_height, browser=browser, duration=duration,
                                    on_progress=on_progress)
-    untouched = subtitles is None and not scale_filter(source.video_height, target_height)
+    light_enough = not max_bitrate or (source.video_bitrate or 0) <= max_bitrate
+    untouched = subtitles is None and not scale_filter(source.video_height, target_height, max_height) and light_enough
     if untouched and (source.browser_ready or not browser):
         log.info("source %s copied as it is, audio %s", source.video_format or "video", sound)
         _render(tool.path, None, None, (audio_codec, audio_bitrate), video, audio, None, target, **options)
@@ -313,7 +328,7 @@ def render(video: Path, audio: Path, subtitles: Path | None, target: Path, *, to
     if attempts[0].gpu:
         attempts.append(choose_encoder(source.video_format, tool, gpu=False, formats=formats))
     for index, encoder in enumerate(attempts):
-        bitrate = target_bitrate(source, encoder.format)
+        bitrate = target_bitrate(source, encoder.format, max_bitrate)
         log.info("source %s at %s → %s at %s, audio %s", source.video_format or "unknown",
                  format_bitrate(source.video_bitrate), encoder.label, format_bitrate(bitrate), sound)
         try:
@@ -330,7 +345,7 @@ def render(video: Path, audio: Path, subtitles: Path | None, target: Path, *, to
 def _render(binary: str, encoder: Encoder | None, bitrate: int | None, audio_encoding: tuple[str, str | None],
             video: Path, audio: Path, subtitles: Path | None, target: Path, *, darken: float,
             duration: float | None, lead: Path | None, lead_volume: float, gain_db: float | None,
-            target_height: int | None,
+            target_height: int | None, max_height: int | None, max_bitrate: int | None,
             source_height: int | None, browser: bool, on_progress: ProgressCallback | None) -> None:
     """One ffmpeg run. `encoder` None copies the video stream (no filters then); `subtitles` None burns in nothing."""
     # The subtitles filter chokes on Windows drive letters ("C:"), so ffmpeg runs
@@ -348,11 +363,12 @@ def _render(binary: str, encoder: Encoder | None, bitrate: int | None, audio_enc
     if encoder is None:
         video_options: dict[str, Any] = {"vcodec": "copy"}
     else:
-        if scale_filter(source_height, target_height):
-            picture = picture.filter("scale", -2, target_height)
+        scaling = scale_filter(source_height, target_height, max_height)
+        if scaling:
+            picture = picture.filter("scale", -2, int(scaling.rsplit(":", 1)[1]))
         if subtitles is not None:
             picture = picture.filter("eq", brightness=-darken).filter("subtitles", relative(subtitles))
-        video_options = {"vcodec": encoder.codec, "pix_fmt": "yuv420p", **encoder.options(bitrate)}
+        video_options = {"vcodec": encoder.codec, "pix_fmt": "yuv420p", **encoder.options(bitrate, max_bitrate)}
         if browser:
             video_options["profile:v"] = "high"
     if browser:
