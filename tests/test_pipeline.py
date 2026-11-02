@@ -9,7 +9,7 @@ from karaokifex import pipeline
 from karaokifex.config import Config
 from karaokifex.models import LyricLine, Lyrics, TimedWord, VideoInfo
 from karaokifex.runner import TaskRunner
-from karaokifex.steps.lyrics import save_lyrics
+from karaokifex.steps.lyrics import load_lyrics, save_lyrics, unanswered
 from karaokifex.steps.transcription import save_transcript
 from karaokifex.workspace import Workspace
 
@@ -296,3 +296,51 @@ def test_a_song_made_again_from_its_kept_download_asks_the_site_nothing(tmp_path
     ctx = type("Ctx", (), {"note": lambda self, n: notes.append(n), "progress": lambda self, f: None})()
     pipeline._download(job, ctx)
     assert notes == ["the kept download"]
+
+
+class _Ctx:
+    def note(self, text):
+        pass
+
+
+def _down(*args, **kwargs):
+    raise requests.HTTPError("502 Server Error: Bad Gateway")
+
+
+def test_lrclib_down_is_a_miss_and_the_song_goes_on(job, monkeypatch):
+    monkeypatch.setattr("karaokifex.steps.lyrics.fetch_lyrics", _down)
+    said = pipeline._lyrics(job, _Ctx())
+    assert "whisperx transcription" in said
+    assert load_lyrics(job.workspace.lyrics_json) == []
+    assert unanswered(job.workspace.lyrics_json)
+
+
+def test_lrclib_down_goes_on_to_the_lyrics_given(job, tmp_path, monkeypatch):
+    monkeypatch.setattr("karaokifex.steps.lyrics.fetch_lyrics", _down)
+    given = tmp_path / "given.txt"
+    given.write_text("Hello world\nAgain\n", encoding="utf-8")
+    job = replace(job, config=replace(job.config, lyrics_file=given))
+    pipeline._lyrics(job, _Ctx())
+    assert [line.text for line in load_lyrics(job.workspace.lyrics_json)[0].lines] == ["Hello world", "Again"]
+    assert unanswered(job.workspace.lyrics_json)
+
+
+def test_lrclib_down_never_costs_a_song_the_lyrics_it_has(job, monkeypatch):
+    save_lyrics([lyrics(1, (5.0, "Hello world"))], job.workspace.lyrics_json)
+    monkeypatch.setattr("karaokifex.steps.lyrics.fetch_lyrics", _down)
+    assert "lrclib #1" in pipeline._lyrics(job, _Ctx())
+    assert [c.lrclib_id for c in load_lyrics(job.workspace.lyrics_json)] == [1]
+    assert not unanswered(job.workspace.lyrics_json)
+
+
+def test_a_retime_asks_again_where_lrclib_had_not_answered(job, monkeypatch):
+    job.workspace.lead.write_bytes(b"lead")
+    retime = replace(job, config=replace(job.config, retime=True))
+    save_lyrics([], job.workspace.lyrics_json)
+    assert tasks_of(retime)["lyrics"].keep, "a plain miss stands"
+    save_lyrics([], job.workspace.lyrics_json, unanswered=True)
+    assert not tasks_of(retime)["lyrics"].keep
+    monkeypatch.setattr("karaokifex.steps.lyrics.fetch_lyrics", lambda *a, **k: [lyrics(2, (5.0, "Hello world"))])
+    pipeline._lyrics(retime, _Ctx())
+    assert not unanswered(job.workspace.lyrics_json), "answered at last"
+    assert tasks_of(retime)["lyrics"].keep

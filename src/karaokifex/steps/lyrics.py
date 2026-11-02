@@ -227,12 +227,23 @@ def describe(lyrics: Lyrics) -> str:
     return f"{where}: {lyrics.artist} – {lyrics.track} ({kind})"
 
 
-def save_lyrics(candidates: Sequence[Lyrics], path: Path) -> None:
-    """Also records a miss, so a re-run doesn't query lrclib again."""
+def save_lyrics(candidates: Sequence[Lyrics], path: Path, *, unanswered: bool = False) -> None:
+    """Also records a miss, so a re-run doesn't query lrclib again; unless lrclib never answered (unanswered), which
+    says so in the file: a --retime asks again, and whoever keeps the songs can look for it (unanswered())."""
     data = {"found": bool(candidates), "candidates": [lyrics.to_dict() for lyrics in candidates]}
+    if unanswered:
+        data["unanswered"] = True
     partial = partial_path(path)
     partial.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     partial.replace(path)
+
+
+def unanswered(path: Path) -> bool:
+    """Whether these lyrics were saved with lrclib not answering, so it has yet to be asked."""
+    try:
+        return bool(json.loads(path.read_text(encoding="utf-8")).get("unanswered"))
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def load_lyrics(path: Path) -> list[Lyrics]:

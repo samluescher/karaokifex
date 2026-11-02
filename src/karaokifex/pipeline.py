@@ -275,8 +275,9 @@ def retime_tasks(job: Job) -> list[Task]:
     and run again where not; the forced alignment and the subtitles always run again (the run is forced)."""
     ws, cfg = job.workspace, job.config
     tasks = [
+        # (kept, but where lrclib had not answered when the song was made: a retime is how it is asked again)
         Task("lyrics", partial(_lyrics, job), outputs=(ws.lyrics_json,), description="lrclib lookup",
-             keep=not cfg.fresh_lyrics),
+             keep=not cfg.fresh_lyrics and not lyrics.unanswered(ws.lyrics_json)),
         Task("load_whisper", partial(_load_whisper, job), outputs=(ws.transcript_json,), keep=True,
              description=f"whisperx {cfg.whisper_model}"),
         Task("vocal_activity", partial(_vocal_activity, job), outputs=(ws.lead_activity,), keep=True,
@@ -322,18 +323,30 @@ def run_pipeline(config: Config) -> PipelineResult:
 
 
 def _lyrics(job: Job, ctx: TaskContext) -> str:
-    """lrclib first, always; lyrics given with the song (--lyrics-file) only when it has none; then whisperx."""
+    """lrclib first, always; lyrics given with the song (--lyrics-file) only when it has none; then whisperx.
+
+    lrclib down, past its own retries, is a miss for this run and no failure of the song: the next source goes on, the
+    lyrics a song has already are kept, and the file says lrclib has yet to answer.
+    """
     ctx.note(f"searching “{job.artist} – {job.song}”…")
-    found = _only_swiss_german(job, lyrics.fetch_lyrics(job.artist, job.song, job.info.duration))
+    unanswered = False
+    try:
+        found = _only_swiss_german(job, lyrics.fetch_lyrics(job.artist, job.song, job.info.duration))
+    except (requests.RequestException, ValueError) as error:
+        log.warning("lrclib didn't answer (%s): going on without it, to be asked again", error)
+        found, unanswered = [], True
+        had = lyrics.load_lyrics(job.workspace.lyrics_json) if job.workspace.lyrics_json.exists() else []
+        if had:
+            return lyrics.describe(had[0]) + " (lrclib didn't answer: the lyrics the song had)"
     if found and job.config.lyrics_file:
         log.info("lrclib has the song: the lyrics given (%s) are not used", job.config.lyrics_file.name)
     if not found and job.config.lyrics_file:
         given = lyrics.from_file(job.config.lyrics_file, job.artist, job.song)
-        lyrics.save_lyrics([given] if given.lines else [], job.workspace.lyrics_json)
+        lyrics.save_lyrics([given] if given.lines else [], job.workspace.lyrics_json, unanswered=unanswered)
         log.info("none on lrclib: lyrics given, %s, %d lines", job.config.lyrics_file.name, len(given.lines))
         if given.lines:
             return lyrics.describe(given) + " (lrclib miss)"
-    lyrics.save_lyrics(found, job.workspace.lyrics_json)
+    lyrics.save_lyrics(found, job.workspace.lyrics_json, unanswered=unanswered)
     if not found:
         log.warning("no lyrics on lrclib — the whisperx transcription will be used instead")
         return "whisperx transcription (lrclib miss)"
